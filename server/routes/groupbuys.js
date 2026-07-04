@@ -199,7 +199,7 @@ router.get('/:id', (req, res) => {
  */
 router.post('/:id/join', authMiddleware, (req, res) => {
   const gbId = parseInt(req.params.id);
-  const { skuSpecId } = req.body;
+  const { skuSpecId, addressId } = req.body;
 
   const gb = db.prepare(`
     SELECT gb.*, s.name as sku_name, s.main_image, s.sale_price, s.unit,
@@ -245,22 +245,48 @@ router.post('/:id/join', authMiddleware, (req, res) => {
     return error(res, '商品库存不足', 409);
   }
 
+  // 解析收货地址 (拼团订单也需要收货地址供骑手配送)
+  let address = null;
+  let addressSnapshot = JSON.stringify({ note: '拼团订单' });
+  if (addressId) {
+    address = db.prepare(`SELECT * FROM user_address WHERE id = ? AND user_id = ?`).get(addressId, req.userId);
+    if (!address) {
+      return error(res, '收货地址不存在', 404);
+    }
+    addressSnapshot = JSON.stringify({
+      name: address.contact_name,
+      phone: address.contact_phone,
+      detail: address.detail_address,
+      latitude: address.latitude || null,
+      longitude: address.longitude || null,
+    });
+  }
+
   // 创建拼团订单
   const orderNo = generateOrderNo();
   const orderPrice = gb.group_price;
   const expireAt = minutesFromNow(15);
 
   const joinTxn = db.transaction(() => {
+    // 并发防护: 原子地增加 joined_count, 仅当未满员时才成功
+    const updGb = db.prepare(`
+      UPDATE group_buy SET joined_count = joined_count + 1, updated_at = datetime('now')
+      WHERE id = ? AND status = 1 AND joined_count < target_count
+    `).run(gbId);
+    if (updGb.changes === 0) {
+      throw new Error('GROUP_FULL_OR_CLOSED');
+    }
+
     const orderResult = db.prepare(`
       INSERT INTO "order" (
         order_no, user_id, community_id, warehouse_id, leader_id,
         address_id, address_snapshot, status, delivery_type,
         delivery_time_type, delivery_fee, sku_total_amount,
         pay_amount, source, group_buy_id, expire_at
-      ) VALUES (?, ?, ?, ?, ?, NULL, ?, 10, 2, 1, 0, ?, ?, 'group_buy', ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 10, 2, 1, 0, ?, ?, 'group_buy', ?, ?)
     `).run(
       orderNo, req.userId, gb.community_id, gb.warehouse_id, gb.leader_id,
-      JSON.stringify({ note: '拼团订单' }),
+      address ? address.id : null, addressSnapshot,
       orderPrice, orderPrice, gbId, expireAt
     );
 
@@ -292,16 +318,10 @@ router.post('/:id/join', authMiddleware, (req, res) => {
       VALUES (?, ?, ?, 1)
     `).run(gbId, req.userId, orderId);
 
-    // 更新拼团已参团人数
-    db.prepare(`
-      UPDATE group_buy SET joined_count = joined_count + 1, updated_at = datetime('localtime')
-      WHERE id = ?
-    `).run(gbId);
-
     // 检查是否成团
     const updatedGb = db.prepare('SELECT joined_count, target_count FROM group_buy WHERE id = ?').get(gbId);
     if (updatedGb.joined_count >= updatedGb.target_count) {
-      db.prepare('UPDATE group_buy SET status = 2, updated_at = datetime(\'localtime\') WHERE id = ?').run(gbId);
+      db.prepare('UPDATE group_buy SET status = 2, updated_at = datetime(\'now\') WHERE id = ?').run(gbId);
 
       // 通知所有参与者成团
       const participants = db.prepare(`SELECT user_id FROM group_buy_participant WHERE group_buy_id = ? AND status = 1`).all(gbId);
@@ -323,7 +343,13 @@ router.post('/:id/join', authMiddleware, (req, res) => {
   try {
     orderId = joinTxn();
   } catch (e) {
-    return error(res, e.message || '参团失败', 400);
+    if (e.message === 'GROUP_FULL_OR_CLOSED') {
+      return error(res, '拼团已满员或已结束', 409);
+    }
+    if (e.message === '商品库存不足') {
+      return error(res, '商品库存不足', 409);
+    }
+    return error(res, '参团失败, 请稍后重试', 400);
   }
 
   const updatedGb = db.prepare('SELECT joined_count, target_count FROM group_buy WHERE id = ?').get(gbId);

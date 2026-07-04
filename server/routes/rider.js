@@ -62,6 +62,7 @@ router.get('/orders', (req, res) => {
       payTime: o.pay_time,
       items,
       address,
+      deliveryTimeSlot: o.delivery_time_slot,
       userName: o.nick_name,
       userPhone: o.user_phone,
       communityName: o.community_name,

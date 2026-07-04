@@ -70,7 +70,7 @@ router.put('/addresses/:id', (req, res) => {
     UPDATE user_address SET
       contact_name = ?, contact_phone = ?, province = ?, city = ?,
       district = ?, detail_address = ?, latitude = ?, longitude = ?,
-      is_default = ?, updated_at = datetime('localtime')
+      is_default = ?, updated_at = datetime('now')
     WHERE id = ? AND user_id = ?
   `).run(
     contactName, contactPhone, province || '', city || '',

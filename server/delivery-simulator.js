@@ -26,8 +26,10 @@ function simulateDeliveryFlow(orderId) {
 
       const nowStr = now();
       const dispatchTxn = db.transaction(() => {
-        db.prepare(`UPDATE \`order\` SET status = 30, rider_id = ?, rider_accept_time = ? WHERE id = ?`)
+        // 并发防护: WHERE status = 20, 防止与团长派单重复
+        const upd = db.prepare(`UPDATE \`order\` SET status = 30, rider_id = ?, rider_accept_time = ? WHERE id = ? AND status = 20`)
           .run(rider.id, nowStr, orderId);
+        if (upd.changes === 0) return; // 订单已被团长派单或其他原因变更, 跳过
 
         db.prepare(`INSERT INTO rider_delivery (order_id, rider_id, status, accept_time, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?)`)
           .run(orderId, rider.id, nowStr, nowStr, nowStr);

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
-const { success, error, now, generateWithdrawNo } = require('../helpers');
+const { success, error, now, generateWithdrawNo, todayLocalDate } = require('../helpers');
 const authMiddleware = require('../middleware/auth');
 const { createMessage } = require('./messages');
 const { settleCommissionForOrder } = require('../scheduler');
@@ -29,8 +29,8 @@ router.get('/dashboard', (req, res) => {
     });
   }
 
-  const today = new Date().toISOString().substring(0, 10);
-  const yesterday = new Date(Date.now() - 86400000).toISOString().substring(0, 10);
+  const today = todayLocalDate();
+  const yesterday = todayLocalDate(-1);
 
   // 今日订单
   const todayOrders = db.prepare(`
@@ -72,7 +72,7 @@ router.get('/dashboard', (req, res) => {
   // 近7天趋势
   const trend = [];
   for (let i = 6; i >= 0; i--) {
-    const d = new Date(Date.now() - i * 86400000).toISOString().substring(0, 10);
+    const d = todayLocalDate(-i);
     const r = db.prepare(`
       SELECT COUNT(*) as cnt FROM \`order\` WHERE leader_id = ? AND DATE(created_at) = ?
     `).get(leader.id, d);
@@ -107,17 +107,22 @@ router.get('/orders', (req, res) => {
   const offset = (page - 1) * pageSize;
 
   let sql = `SELECT o.* FROM \`order\` o WHERE o.leader_id = ?`;
+  let countSql = `SELECT COUNT(*) as cnt FROM \`order\` o WHERE o.leader_id = ?`;
   const params = [leader.id];
+  const countParams = [leader.id];
 
   if (status) {
     sql += ` AND o.status = ?`;
+    countSql += ` AND o.status = ?`;
     params.push(parseInt(status));
+    countParams.push(parseInt(status));
   }
 
   sql += ` ORDER BY o.created_at DESC LIMIT ? OFFSET ?`;
   params.push(parseInt(pageSize), offset);
 
   const orders = db.prepare(sql).all(...params);
+  const total = db.prepare(countSql).get(...countParams).cnt;
   const itemStmt = db.prepare(`SELECT * FROM order_item WHERE order_id = ?`);
 
   const result = orders.map(o => {
@@ -125,7 +130,7 @@ router.get('/orders', (req, res) => {
     return { ...o, items };
   });
 
-  return success(res, { list: result, total: result.length });
+  return success(res, { list: result, total });
 });
 
 /**
@@ -272,8 +277,12 @@ router.post('/orders/:id/dispatch', (req, res) => {
 
   const nowStr = now();
   const dispatchTxn = db.transaction(() => {
-    db.prepare(`UPDATE \`order\` SET status = 30, rider_id = ?, rider_accept_time = ? WHERE id = ?`)
+    // 并发防护: WHERE status = 20, 防止与定时自动派单重复派单
+    const upd = db.prepare(`UPDATE \`order\` SET status = 30, rider_id = ?, rider_accept_time = ? WHERE id = ? AND status = 20`)
       .run(rider.id, nowStr, orderId);
+    if (upd.changes === 0) {
+      throw new Error('ORDER_STATUS_CHANGED');
+    }
 
     db.prepare(`INSERT INTO rider_delivery (order_id, rider_id, status, accept_time, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?)`)
       .run(orderId, rider.id, nowStr, nowStr, nowStr);
@@ -289,7 +298,10 @@ router.post('/orders/:id/dispatch', (req, res) => {
   try {
     dispatchTxn();
   } catch (e) {
-    return error(res, '派单失败: ' + e.message, 500);
+    if (e.message === 'ORDER_STATUS_CHANGED') {
+      return error(res, '订单状态已变更, 无法派单', 400);
+    }
+    return error(res, '派单失败, 请稍后重试', 500);
   }
 
   return success(res, { orderId, status: 30, riderName: rider.name, riderPhone: rider.phone }, '已派单，订单配送中');
@@ -444,8 +456,14 @@ router.post('/refunds/:id/approve', (req, res) => {
   const nowStr = now();
 
   const refundTxn = db.transaction(() => {
+    // 重新校验退款状态, 防止重复处理
+    const freshRefund = db.prepare(`SELECT status FROM refund WHERE id = ?`).get(refundId);
+    if (!freshRefund || freshRefund.status !== 0) {
+      throw new Error('REFUND_ALREADY_PROCESSED');
+    }
+
     // 更新退款状态
-    db.prepare(`UPDATE refund SET status = 1, updated_at = ? WHERE id = ?`).run(nowStr, refundId);
+    db.prepare(`UPDATE refund SET status = 1, updated_at = ? WHERE id = ? AND status = 0`).run(nowStr, refundId);
 
     // 订单标记为已取消 (退款)
     db.prepare(`UPDATE \`order\` SET status = 99, cancel_time = ?, cancel_reason = ? WHERE id = ?`)
@@ -458,6 +476,34 @@ router.post('/refunds/:id/approve', (req, res) => {
       updateInv.run(item.quantity, order.warehouse_id, item.sku_id);
     }
 
+    // 返还优惠券 (仅当订单未使用前 coupon_id 存在)
+    if (order.coupon_id) {
+      db.prepare(`UPDATE user_coupon SET status = 0, used_order_id = NULL WHERE id = ? AND status = 1`)
+        .run(order.coupon_id);
+    }
+
+    // 释放骑手 (配送中订单退款, 减少骑手当前订单数, 关闭 rider_delivery 记录)
+    if (order.rider_id && (order.status === 30 || order.status === 40)) {
+      db.prepare(`UPDATE rider SET current_orders = current_orders - 1 WHERE id = ? AND current_orders > 0`)
+        .run(order.rider_id);
+      db.prepare(`UPDATE rider_delivery SET status = 4, updated_at = ? WHERE order_id = ? AND rider_id = ? AND status IN (1, 2, 3)`)
+        .run(nowStr, order.id, order.rider_id);
+    }
+
+    // 回扣已结算佣金 (仅订单已完成 status=50 且佣金已结算时)
+    if (order.status === 50) {
+      const settledCommissions = db.prepare(`SELECT leader_id, SUM(amount) as total FROM commission_settlement WHERE order_id = ? AND status = 1 GROUP BY leader_id`).all(order.id);
+      for (const sc of settledCommissions) {
+        // 佣金记录置为已回扣 status=2, 同步扣减团长余额
+        db.prepare(`UPDATE commission_settlement SET status = 2 WHERE order_id = ? AND leader_id = ? AND status = 1`)
+          .run(order.id, sc.leader_id);
+        db.prepare(`UPDATE leader SET total_commission = total_commission - ?, withdrawable_commission = withdrawable_commission - ? WHERE id = ? AND withdrawable_commission >= ?`)
+          .run(sc.total, sc.total, sc.leader_id, sc.total);
+      }
+      // 标记订单佣金已回扣
+      db.prepare(`UPDATE \`order\` SET commission_settled = 0 WHERE id = ?`).run(order.id);
+    }
+
     db.prepare(`INSERT INTO order_status_log (order_id, from_status, to_status, operator, remark) VALUES (?, ?, 99, ?, '团长同意退款')`)
       .run(order.id, order.status, 'leader');
 
@@ -468,7 +514,10 @@ router.post('/refunds/:id/approve', (req, res) => {
   try {
     refundTxn();
   } catch (e) {
-    return error(res, '退款失败: ' + e.message, 500);
+    if (e.message === 'REFUND_ALREADY_PROCESSED') {
+      return error(res, '退款申请已处理, 请勿重复操作', 409);
+    }
+    return error(res, '退款处理失败, 请稍后重试', 500);
   }
 
   return success(res, { refundId, status: 1 }, '已同意退款');
@@ -495,12 +544,26 @@ router.post('/refunds/:id/reject', (req, res) => {
   const order = db.prepare(`SELECT * FROM \`order\` WHERE id = ?`).get(refund.order_id);
   const nowStr = now();
 
-  db.prepare(`UPDATE refund SET status = 2, updated_at = ? WHERE id = ?`).run(nowStr, refundId);
+  const rejectTxn = db.transaction(() => {
+    const upd = db.prepare(`UPDATE refund SET status = 2, updated_at = ? WHERE id = ? AND status = 0`).run(nowStr, refundId);
+    if (upd.changes === 0) {
+      throw new Error('REFUND_ALREADY_PROCESSED');
+    }
 
-  db.prepare(`INSERT INTO order_status_log (order_id, from_status, to_status, operator, remark) VALUES (?, ?, ?, ?, ?)`)
-    .run(order.id, order.status, order.status, 'leader', `拒绝退款: ${rejectReason}`);
+    db.prepare(`INSERT INTO order_status_log (order_id, from_status, to_status, operator, remark) VALUES (?, ?, ?, ?, ?)`)
+      .run(order.id, order.status, order.status, 'leader', `拒绝退款: ${rejectReason}`);
 
-  createMessage(order.user_id, 'refund_rejected', '退款被拒绝', `订单 ${order.order_no} 的退款申请被拒绝，原因: ${rejectReason}`, order.id);
+    createMessage(order.user_id, 'refund_rejected', '退款被拒绝', `订单 ${order.order_no} 的退款申请被拒绝，原因: ${rejectReason}`, order.id);
+  });
+
+  try {
+    rejectTxn();
+  } catch (e) {
+    if (e.message === 'REFUND_ALREADY_PROCESSED') {
+      return error(res, '退款申请已处理, 请勿重复操作', 409);
+    }
+    return error(res, '拒绝退款失败, 请稍后重试', 500);
+  }
 
   return success(res, { refundId, status: 2 }, '已拒绝退款');
 });
@@ -546,15 +609,21 @@ router.post('/withdraw', (req, res) => {
     db.prepare(`INSERT INTO leader_withdraw (leader_id, withdraw_no, amount, status, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)`)
       .run(leader.id, withdrawNo, withdrawAmount, nowStr, nowStr);
 
-    // 冻结提现金额
-    db.prepare(`UPDATE leader SET withdrawable_commission = withdrawable_commission - ? WHERE id = ?`)
-      .run(withdrawAmount, leader.id);
+    // 冻结提现金额 (并发防护: WHERE withdrawable_commission >= amount, 防止透支)
+    const upd = db.prepare(`UPDATE leader SET withdrawable_commission = withdrawable_commission - ? WHERE id = ? AND withdrawable_commission >= ?`)
+      .run(withdrawAmount, leader.id, withdrawAmount);
+    if (upd.changes === 0) {
+      throw new Error('INSUFFICIENT_BALANCE');
+    }
   });
 
   try {
     withdrawTxn();
   } catch (e) {
-    return error(res, '提现申请失败: ' + e.message, 500);
+    if (e.message === 'INSUFFICIENT_BALANCE') {
+      return error(res, '可提现佣金不足, 请刷新后重试', 400);
+    }
+    return error(res, '提现申请失败, 请稍后重试', 500);
   }
 
   createMessage(leader.user_id, 'withdraw_applied', '提现申请已提交', `提现申请 ¥${withdrawAmount.toFixed(2)} 已提交，等待审核`, null);

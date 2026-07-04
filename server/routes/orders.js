@@ -96,17 +96,22 @@ router.get('/', (req, res) => {
   const offset = (page - 1) * pageSize;
 
   let sql = `SELECT * FROM \`order\` WHERE user_id = ?`;
+  let countSql = `SELECT COUNT(*) as cnt FROM \`order\` WHERE user_id = ?`;
   const params = [req.userId];
+  const countParams = [req.userId];
 
   if (status) {
     sql += ` AND status = ?`;
+    countSql += ` AND status = ?`;
     params.push(parseInt(status));
+    countParams.push(parseInt(status));
   }
 
   sql += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`;
   params.push(parseInt(pageSize), offset);
 
   const orders = db.prepare(sql).all(...params);
+  const total = db.prepare(countSql).get(...countParams).cnt;
 
   // 为每个订单加载 items，并补充 bg/emoji
   const itemStmt = db.prepare(`SELECT * FROM order_item WHERE order_id = ?`);
@@ -118,7 +123,7 @@ router.get('/', (req, res) => {
     return { ...mapOrder(o), items };
   });
 
-  return success(res, { list: result, total: result.length, page: parseInt(page), pageSize: parseInt(pageSize) });
+  return success(res, { list: result, total, page: parseInt(page), pageSize: parseInt(pageSize) });
 });
 
 /**
@@ -152,6 +157,44 @@ router.post('/', (req, res) => {
 
   if (!items || !items.length || !addressId) {
     return error(res, '商品和地址不能为空', 400);
+  }
+
+  // 校验配送类型
+  if (![1, 2].includes(deliveryTimeType)) {
+    return error(res, '配送类型不合法', 400);
+  }
+  // 预约配送必须提供时段, 格式 "YYYY-MM-DD HH:MM-HH:MM"
+  if (deliveryTimeType === 2) {
+    if (!deliveryTimeSlot || typeof deliveryTimeSlot !== 'string') {
+      return error(res, '请选择预约送达时段', 400);
+    }
+    const slotMatch = deliveryTimeSlot.match(/^(\d{4}-\d{2}-\d{2}) (\d{2}):00-(\d{2}):00$/);
+    if (!slotMatch) {
+      return error(res, '预约时段格式不正确', 400);
+    }
+    const slotDate = slotMatch[1];
+    const startHour = parseInt(slotMatch[2], 10);
+    const endHour = parseInt(slotMatch[3], 10);
+    if (startHour >= endHour || startHour < 9 || endHour > 21) {
+      return error(res, '预约时段不在服务时间(09:00-21:00)内', 400);
+    }
+    // 校验日期不早于今天, 不晚于 3 天后
+    const slotDateObj = new Date(slotDate + 'T00:00:00');
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const maxDate = new Date(today.getTime() + 3 * 86400000);
+    if (slotDateObj < today || slotDateObj > maxDate) {
+      return error(res, '预约日期不在可选范围(未来3天)内', 400);
+    }
+    // 今天则时段必须未结束
+    if (slotDateObj.getTime() === today.getTime()) {
+      if (startHour <= new Date().getHours()) {
+        return error(res, '该时段已结束, 请选择其他时段', 400);
+      }
+    }
+  } else if (deliveryTimeSlot) {
+    // 尽快送达不应带 slot
+    return error(res, '尽快送达无需选择时段', 400);
   }
 
   // 校验地址
@@ -195,22 +238,45 @@ router.post('/', (req, res) => {
     skuTotal += subtotal;
     orderItems.push({ sku, price, specName, quantity: item.quantity, subtotal });
   }
+  // 金额精度归一 (避免浮点累加误差)
+  skuTotal = parseFloat(skuTotal.toFixed(2));
 
-  // 配送费
-  const deliveryFee = skuTotal >= 29 ? 0 : 3;
-
-  // 优惠券
+  // 配送费 (免配送费券在优惠券核销时置 deliveryFee=0)
+  let deliveryFee = skuTotal >= 29 ? 0 : 3;
+  // 免配送费券类型标记, 在事务内才核销
   let couponDiscount = 0;
+  let couponInfo = null;
   if (couponId) {
     const uc = db.prepare(`SELECT uc.*, c.* FROM user_coupon uc JOIN coupon c ON uc.coupon_id = c.id WHERE uc.id = ? AND uc.user_id = ? AND uc.status = 0`).get(couponId, req.userId);
-    if (uc && skuTotal >= uc.min_order_amount) {
-      if (uc.type === 1) couponDiscount = uc.face_value;
-      else if (uc.type === 2) couponDiscount = skuTotal * (1 - uc.face_value);
-      else if (uc.type === 3) couponDiscount = 0; // 免配送费在 deliveryFee 层处理
+    if (!uc) {
+      return error(res, '优惠券不存在或已使用', 400);
+    }
+    // 校验是否过期
+    if (uc.valid_end && new Date(uc.valid_end).getTime() < Date.now()) {
+      return error(res, '优惠券已过期', 400);
+    }
+    // 校验门槛金额
+    if (skuTotal < uc.min_order_amount) {
+      return error(res, `未达到优惠券使用门槛(满${uc.min_order_amount}元)`, 400);
+    }
+    couponInfo = uc;
+    if (uc.type === 1) {
+      // 满减券: 抵扣金额不超过 skuTotal
+      couponDiscount = Math.min(parseFloat(uc.face_value), skuTotal);
+    } else if (uc.type === 2) {
+      // 折扣券: face_value 为折扣比例 (0~1), 抵扣 = skuTotal * (1 - 折扣)
+      couponDiscount = parseFloat((skuTotal * (1 - uc.face_value)).toFixed(2));
+    } else if (uc.type === 3) {
+      // 免配送费券: 抵扣配送费 (deliveryFee 置 0)
+      couponDiscount = 0;
+      deliveryFee = 0;
     }
   }
 
-  const payAmount = skuTotal + deliveryFee - couponDiscount;
+  // 实付金额下限保护 (避免满减券+配送费组合导致负金额)
+  let payAmount = parseFloat((skuTotal + deliveryFee - couponDiscount).toFixed(2));
+  if (payAmount < 0) payAmount = 0;
+
   const orderNo = 'O' + new Date().toISOString().replace(/[-T:.Z]/g, '').substring(0, 14) + Math.floor(Math.random() * 10000).toString().padStart(4, '0');
   const expireAt = new Date(Date.now() + 15 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
 
@@ -232,7 +298,14 @@ router.post('/', (req, res) => {
   const clearCart = db.prepare(`DELETE FROM cart_items WHERE id = ? AND user_id = ?`);
 
   const txn = db.transaction(() => {
-    const addressSnapshot = JSON.stringify({ name: address.contact_name, phone: address.contact_phone, detail: address.detail_address });
+    // address_snapshot 包含经纬度 (供骑手地图终点使用)
+    const addressSnapshot = JSON.stringify({
+      name: address.contact_name,
+      phone: address.contact_phone,
+      detail: address.detail_address,
+      latitude: address.latitude || null,
+      longitude: address.longitude || null,
+    });
     const result = insertOrder.run(orderNo, req.userId, communityId, warehouseId, addressId, addressSnapshot, deliveryTimeType, deliveryTimeSlot, deliveryFee, skuTotal, couponDiscount, couponId, couponDiscount, payAmount, remark, expireAt);
     const orderId = result.lastInsertRowid;
 
@@ -246,8 +319,19 @@ router.post('/', (req, res) => {
       }
     }
 
-    // 核销优惠券 (加并发防护: AND status = 0)
+    // 核销优惠券 (并发防护: AND status = 0, 事务内重新校验门槛)
     if (couponId) {
+      // 重新查询以获取最新状态 (防止并发使用)
+      const fresh = db.prepare(`SELECT status, min_order_amount, valid_end FROM user_coupon uc JOIN coupon c ON uc.coupon_id = c.id WHERE uc.id = ?`).get(couponId);
+      if (!fresh || fresh.status !== 0) {
+        throw new Error('优惠券已被使用或不存在');
+      }
+      if (skuTotal < fresh.min_order_amount) {
+        throw new Error('未达到优惠券使用门槛');
+      }
+      if (fresh.valid_end && new Date(fresh.valid_end).getTime() < Date.now()) {
+        throw new Error('优惠券已过期');
+      }
       const couponResult = db.prepare(`UPDATE user_coupon SET status = 1, used_order_id = ? WHERE id = ? AND status = 0`).run(orderId, couponId);
       if (couponResult.changes === 0) {
         throw new Error('优惠券已被使用或不存在');
@@ -316,11 +400,14 @@ router.post('/:orderNo/pay', (req, res) => {
   const items = db.prepare(`SELECT * FROM order_item WHERE order_id = ?`).all(order.id);
 
   const payTxn = db.transaction(() => {
-    // 1. 更新订单状态
-    db.prepare(`
+    // 1. 更新订单状态 (并发防护: WHERE status = 10 AND pay_status = 0, 防止已取消订单被支付)
+    const payUpdate = db.prepare(`
       UPDATE \`order\` SET status = 20, pay_status = 1, pay_time = ?, pay_way = 1, wx_transaction_id = ?
-      WHERE id = ? AND pay_status = 0
+      WHERE id = ? AND status = 10 AND pay_status = 0
     `).run(nowStr, wxTransactionId, order.id);
+    if (payUpdate.changes === 0) {
+      throw new Error('订单状态已变更或已支付, 无法继续支付');
+    }
 
     // 2. 记录支付流水 (幂等性去重)
     db.prepare(`
@@ -370,7 +457,9 @@ router.post('/:orderNo/pay', (req, res) => {
   try {
     payTxn();
   } catch (e) {
-    return error(res, '支付失败: ' + e.message, 500);
+    // 业务校验失败返回 400, 不暴露内部错误细节
+    const msg = e.message && e.message.includes('订单状态已变更') ? e.message : '支付失败, 请稍后重试';
+    return error(res, msg, 400);
   }
 
   // 演示模式: 支付成功后 3 秒自动模拟配送全流程 (20→30→40→50)
@@ -446,10 +535,16 @@ router.post('/:orderNo/confirm', (req, res) => {
 
   const nowStr = now();
   const confirmTxn = db.transaction(() => {
-    db.prepare(`UPDATE \`order\` SET status = 50, completed_time = ? WHERE id = ?`).run(nowStr, order.id);
+    // 事务内重新查询最新状态作为 from_status, 防止状态已被改 (如自动确认或定时任务)
+    const fresh = db.prepare(`SELECT status FROM \`order\` WHERE id = ?`).get(order.id);
+    if (!fresh || (fresh.status !== 30 && fresh.status !== 40)) {
+      throw new Error('当前状态不可确认收货');
+    }
+    db.prepare(`UPDATE \`order\` SET status = 50, completed_time = ? WHERE id = ? AND status IN (30, 40)`)
+      .run(nowStr, order.id);
 
     db.prepare(`INSERT INTO order_status_log (order_id, from_status, to_status, operator, remark) VALUES (?, ?, 50, ?, '用户确认收货')`)
-      .run(order.id, order.status, 'user');
+      .run(order.id, fresh.status, 'user');
 
     createMessage(order.user_id, 'order_completed', '订单已完成', `订单 ${order.order_no} 已完成，感谢您的惠顾`, order.id);
   });
@@ -457,7 +552,8 @@ router.post('/:orderNo/confirm', (req, res) => {
   try {
     confirmTxn();
   } catch (e) {
-    return error(res, '确认失败: ' + e.message, 500);
+    const msg = e.message && e.message.includes('当前状态') ? e.message : '确认失败, 请稍后重试';
+    return error(res, msg, 400);
   }
 
   return success(res, { orderNo, status: 50 }, '确认收货成功');
@@ -486,10 +582,10 @@ router.post('/:orderNo/refund', (req, res) => {
     return error(res, '当前订单状态不支持售后', 400);
   }
 
-  // 检查是否已有进行中的退款
-  const existingRefund = db.prepare(`SELECT id FROM refund WHERE order_id = ? AND status = 0`).get(order.id);
+  // 检查是否已有进行中或已通过的退款 (status=0 进行中, status=1 已通过)
+  const existingRefund = db.prepare(`SELECT id FROM refund WHERE order_id = ? AND status IN (0, 1)`).get(order.id);
   if (existingRefund) {
-    return error(res, '该订单已有进行中的售后申请', 409);
+    return error(res, '该订单已有进行中或已处理的售后申请', 409);
   }
 
   const refundNo = 'R' + Date.now();

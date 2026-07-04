@@ -46,10 +46,20 @@ function generateWithdrawNo() {
 }
 
 /**
- * 获取当前时间的 ISO 字符串 (SQLite 兼容)
+ * 获取当前时间的 ISO 字符串 (SQLite 兼容, UTC)
  */
 function now() {
   return new Date().toISOString().replace('T', ' ').substring(0, 19);
+}
+
+/**
+ * 获取本地时区 (东八区) 的今天日期字符串 YYYY-MM-DD
+ * 用于订单/佣金按日统计, 避免 UTC 偏差导致凌晨统计错乱
+ */
+function todayLocalDate(offsetDays = 0) {
+  // 强制东八区 (UTC+8), 与部署环境对齐
+  const d = new Date(Date.now() + offsetDays * 86400000 + 8 * 3600000);
+  return d.toISOString().substring(0, 10);
 }
 
 /**
@@ -89,6 +99,7 @@ module.exports = {
   generateTransactionNo,
   generateWithdrawNo,
   now,
+  todayLocalDate,
   minutesFromNow,
   hoursFromNow,
   daysFromNow,

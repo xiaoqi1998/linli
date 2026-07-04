@@ -9,6 +9,7 @@ const OrderConfirmPage = (function () {
   let coupons = [];
   let selectedCoupon = null;
   let deliveryType = 1; // 1=尽快 2=预约
+  let deliverySlot = null; // { date: 'YYYY-MM-DD', slot: '09:00-10:00' }
   let remark = '';
 
   async function render() {
@@ -79,7 +80,7 @@ const OrderConfirmPage = (function () {
           </div>
           <div class="oc-delivery-opt ${deliveryType === 2 ? 'active' : ''}" onclick="OrderConfirmPage.selectDelivery(2)">
             <div class="oc-delivery-opt-title">预约配送</div>
-            <div class="oc-delivery-opt-desc">选择送达时段</div>
+            <div class="oc-delivery-opt-desc">${deliverySlot ? `${deliverySlot.dateLabel} ${deliverySlot.slot}` : '选择送达时段'}</div>
           </div>
         </div>
       </div>
@@ -201,11 +202,175 @@ const OrderConfirmPage = (function () {
     return valid[0];
   }
 
+  /**
+   * 生成未来 3 天的可选日期列表
+   */
+  function getDeliveryDates() {
+    const dates = [];
+    const today = new Date();
+    for (let i = 0; i < 3; i++) {
+      const d = new Date(today.getTime() + i * 86400000);
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      const dateStr = `${yyyy}-${mm}-${dd}`;
+      let label = '';
+      if (i === 0) label = '今天';
+      else if (i === 1) label = '明天';
+      else if (i === 2) label = '后天';
+      label += ` ${mm}-${dd}`;
+      dates.push({ date: dateStr, label });
+    }
+    return dates;
+  }
+
+  /**
+   * 生成时段列表
+   * - 今天且当前时间已过 09:00: 仅返回当前小时之后未结束的时段
+   * - 否则返回全部 09:00-21:00 的 2 小时时段
+   */
+  function getDeliverySlots(dateStr) {
+    const allSlots = [
+      '09:00-11:00', '11:00-13:00', '13:00-15:00',
+      '15:00-17:00', '17:00-19:00', '19:00-21:00',
+    ];
+    const today = new Date().toISOString().substring(0, 10);
+    if (dateStr !== today) return allSlots.slice();
+    const now = new Date();
+    const curHour = now.getHours();
+    // 过滤掉已结束时段 (时段开始小时 <= 当前小时 视为已结束)
+    return allSlots.filter(s => parseInt(s.split(':')[0], 10) > curHour);
+  }
+
   function selectDelivery(type) {
     deliveryType = type;
+    // 切换到尽快送达时清空已选时段
+    if (type === 1) {
+      deliverySlot = null;
+    }
     document.querySelectorAll('.oc-delivery-opt').forEach((el, i) => {
       el.classList.toggle('active', i + 1 === type);
     });
+    // 选择预约配送时, 若未选时段则弹出选择器
+    if (type === 2 && !deliverySlot) {
+      openSlotPicker();
+    }
+  }
+
+  function openSlotPicker() {
+    const dates = getDeliveryDates();
+    // 默认选第一个日期
+    let selectedDate = deliverySlot ? deliverySlot.date : dates[0].date;
+    let selectedDateLabel = deliverySlot ? deliverySlot.dateLabel : dates[0].label;
+
+    function renderSlots() {
+      const slots = getDeliverySlots(selectedDate);
+      if (slots.length === 0) {
+        return '<div style="padding:24px;text-align:center;color:var(--color-muted);">今日已无可预约时段</div>';
+      }
+      return slots.map(s => {
+        const isSel = deliverySlot && deliverySlot.slot === s && deliverySlot.date === selectedDate;
+        return `
+          <div class="time-slot-item ${isSel ? 'active' : ''}" onclick="OrderConfirmPage.pickSlot('${selectedDate}','${selectedDateLabel}','${s}')">
+            <span>${s}</span>
+            ${isSel ? '<span class="check">✓</span>' : ''}
+          </div>
+        `;
+      }).join('');
+    }
+
+    function renderContent() {
+      return `
+        <div class="slot-picker">
+          <div class="slot-dates">
+            ${dates.map(d => `
+              <div class="slot-date-item ${d.date === selectedDate ? 'active' : ''}" onclick="OrderConfirmPage.switchSlotDate('${d.date}','${d.label}')">
+                ${d.label}
+              </div>
+            `).join('')}
+          </div>
+          <div class="slot-list" id="slot-list">${renderSlots()}</div>
+          <div style="padding:12px 16px;">
+            <button class="btn btn-primary btn-block" onclick="OrderConfirmPage.confirmSlot()">确定</button>
+          </div>
+        </div>
+      `;
+    }
+
+    App.showSheet('选择送达时段', renderContent());
+  }
+
+  function switchSlotDate(date, label) {
+    // 切换日期后清空已选时段, 重新渲染 Sheet 内容
+    deliverySlot = null;
+    // 直接重新打开选择器以刷新内容
+    const dates = getDeliveryDates();
+    const selectedDateLabel = label;
+    const slots = getDeliverySlots(date);
+    const html = `
+      <div class="slot-picker">
+        <div class="slot-dates">
+          ${dates.map(d => `
+            <div class="slot-date-item ${d.date === date ? 'active' : ''}" onclick="OrderConfirmPage.switchSlotDate('${d.date}','${d.label}')">
+              ${d.label}
+            </div>
+          `).join('')}
+        </div>
+        <div class="slot-list">
+          ${slots.length === 0 ? '<div style="padding:24px;text-align:center;color:var(--color-muted);">今日已无可预约时段</div>' : slots.map(s => `
+            <div class="time-slot-item" onclick="OrderConfirmPage.pickSlot('${date}','${selectedDateLabel}','${s}')">
+              <span>${s}</span>
+            </div>
+          `).join('')}
+        </div>
+        <div style="padding:12px 16px;">
+          <button class="btn btn-primary btn-block" onclick="OrderConfirmPage.confirmSlot()">确定</button>
+        </div>
+      </div>
+    `;
+    App.showSheet('选择送达时段', html);
+  }
+
+  function pickSlot(date, dateLabel, slot) {
+    deliverySlot = { date, dateLabel, slot };
+    // 重新渲染当前 Sheet 高亮选中项
+    const dates = getDeliveryDates();
+    const slots = getDeliverySlots(date);
+    const html = `
+      <div class="slot-picker">
+        <div class="slot-dates">
+          ${dates.map(d => `
+            <div class="slot-date-item ${d.date === date ? 'active' : ''}" onclick="OrderConfirmPage.switchSlotDate('${d.date}','${d.label}')">
+              ${d.label}
+            </div>
+          `).join('')}
+        </div>
+        <div class="slot-list">
+          ${slots.length === 0 ? '<div style="padding:24px;text-align:center;color:var(--color-muted);">今日已无可预约时段</div>' : slots.map(s => {
+            const isSel = deliverySlot && deliverySlot.slot === s;
+            return `
+              <div class="time-slot-item ${isSel ? 'active' : ''}" onclick="OrderConfirmPage.pickSlot('${date}','${dateLabel}','${s}')">
+                <span>${s}</span>
+                ${isSel ? '<span class="check">✓</span>' : ''}
+              </div>
+            `;
+          }).join('')}
+        </div>
+        <div style="padding:12px 16px;">
+          <button class="btn btn-primary btn-block" onclick="OrderConfirmPage.confirmSlot()">确定</button>
+        </div>
+      </div>
+    `;
+    App.showSheet('选择送达时段', html);
+  }
+
+  function confirmSlot() {
+    if (!deliverySlot) {
+      App.toast('请选择送达时段');
+      return;
+    }
+    App.closeSheet();
+    App.navigate();
   }
 
   function selectAddress() {
@@ -288,6 +453,12 @@ const OrderConfirmPage = (function () {
       App.toast('请选择商品');
       return;
     }
+    // 预约配送必须选择送达时段
+    if (deliveryType === 2 && !deliverySlot) {
+      App.toast('请选择预约送达时段');
+      openSlotPicker();
+      return;
+    }
 
     const orderData = {
       items: items.map(i => ({
@@ -297,7 +468,7 @@ const OrderConfirmPage = (function () {
       })),
       addressId: address.id,
       deliveryTimeType: deliveryType,
-      deliveryTimeSlot: deliveryType === 1 ? null : '预约配送',
+      deliveryTimeSlot: deliveryType === 1 ? null : `${deliverySlot.date} ${deliverySlot.slot}`,
       couponId: selectedCoupon ? selectedCoupon.userCouponId : null,
       remark: remark,
       cartItemIds: items.map(i => i.cartItemId).filter(Boolean),
@@ -341,5 +512,5 @@ const OrderConfirmPage = (function () {
     }
   }
 
-  return { render, selectDelivery, selectAddress, setAddress, selectCoupon, setCoupon, setRemark, submit };
+  return { render, selectDelivery, selectAddress, setAddress, selectCoupon, setCoupon, setRemark, submit, switchSlotDate, pickSlot, confirmSlot };
 })();

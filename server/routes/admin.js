@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
-const { success, error } = require('../helpers');
+const { success, error, todayLocalDate } = require('../helpers');
 const authMiddleware = require('../middleware/auth');
 
 // 所有后台接口需要登录 (Demo: 复用用户Token, 正式环境应区分角色)
@@ -124,12 +124,13 @@ router.get('/reports/overview', (req, res) => {
   const { dateRange = 'today' } = req.query;
 
   let dateCondition = '';
-  const today = new Date().toISOString().substring(0, 10);
-  const yesterday = new Date(Date.now() - 86400000).toISOString().substring(0, 10);
+  const today = todayLocalDate();
+  const yesterday = todayLocalDate(-1);
+  const last7Start = todayLocalDate(-6);
 
   if (dateRange === 'today') dateCondition = `DATE(o.created_at) = '${today}'`;
   else if (dateRange === 'yesterday') dateCondition = `DATE(o.created_at) = '${yesterday}'`;
-  else if (dateRange === 'last7days') dateCondition = `o.created_at >= datetime('now', '-7 days')`;
+  else if (dateRange === 'last7days') dateCondition = `DATE(o.created_at) >= '${last7Start}'`;
 
   const summary = db.prepare(`
     SELECT
