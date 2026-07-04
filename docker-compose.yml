@@ -1,0 +1,28 @@
+# ==========================================================================
+# 邻里鲜生 · Docker Compose 部署
+# 单容器同时托管: 后端 API + 三端前端 (web/leader/admin)
+# ==========================================================================
+services:
+  linli-fresh:
+    build: .
+    container_name: linli-fresh
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DB_PATH=/app/server/data/linli_fresh.db
+    volumes:
+      # 数据库持久化 (容器重启不丢数据)
+      - linli-data:/app/server/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  linli-data:
+    driver: local
