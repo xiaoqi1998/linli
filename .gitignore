@@ -16,6 +16,9 @@ Thumbs.db
 
 # 数据库(生产数据不入库)
 *.db
+*.db-shm
+*.db-wal
+*.db-journal
 *.sqlite
 *.sqlite3
 server/data/
