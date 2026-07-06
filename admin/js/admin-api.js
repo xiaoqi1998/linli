@@ -7,6 +7,16 @@ const AdminAPI = (function () {
   function getToken() { return localStorage.getItem('admin_token') || localStorage.getItem('linli_token') || ''; }
   function setToken(t) { localStorage.setItem('admin_token', t); }
 
+  function getAdminInfo() {
+    const info = localStorage.getItem('admin_info');
+    try { return info ? JSON.parse(info) : null; } catch (e) { return null; }
+  }
+  function setAdminInfo(info) { localStorage.setItem('admin_info', JSON.stringify(info)); }
+  function clearAdmin() {
+    localStorage.removeItem('admin_info');
+    localStorage.removeItem('admin_token');
+  }
+
   async function request(method, path, body) {
     const url = BASE + path;
     const headers = { 'Content-Type': 'application/json' };
@@ -30,6 +40,7 @@ const AdminAPI = (function () {
     login: (phone, password) => request('POST', '/auth/login', { phone, password }),
     loginGuest: () => request('POST', '/auth/login-guest', {}),
     getToken, setToken,
+    getAdminInfo, setAdminInfo, clearAdmin,
 
     // Dashboard
     getOverview: (dateRange) => request('GET', `/admin/reports/overview?dateRange=${dateRange || 'today'}`),
@@ -73,5 +84,73 @@ const AdminAPI = (function () {
 
     // Warehouses
     getWarehouses: () => request('GET', '/admin/warehouses'),
+
+    // Admin login (public route, not behind authMiddleware)
+    adminLogin: (username, password) => request('POST', '/auth/admin-login', { username, password }),
+
+    // Banners
+    getBanners: (status) => request('GET', `/admin/banners${status ? '?status=' + status : ''}`),
+    createBanner: (data) => request('POST', '/admin/banners', data),
+    updateBanner: (id, data) => request('PUT', `/admin/banners/${id}`, data),
+    deleteBanner: (id) => request('DELETE', `/admin/banners/${id}`),
+    updateBannerStatus: (id, status) => request('PUT', `/admin/banners/${id}/status`, { status }),
+
+    // Member rules
+    getMemberRules: () => request('GET', '/admin/member-rules'),
+    updateMemberRule: (id, data) => request('PUT', `/admin/member-rules/${id}`, data),
+
+    // Community SKU
+    getCommunitySku: (communityId) => request('GET', `/admin/community-sku?communityId=${communityId}`),
+    addCommunitySku: (data) => request('POST', '/admin/community-sku', data),
+    deleteCommunitySku: (id) => request('DELETE', `/admin/community-sku/${id}`),
+    batchAddCommunitySku: (data) => request('POST', '/admin/community-sku/batch', data),
+
+    // Leader applications
+    getLeaderApplications: (status) => request('GET', `/admin/leader-applications${status !== undefined && status !== '' ? '?status=' + status : ''}`),
+    approveLeaderApp: (id, data) => request('PUT', `/admin/leader-applications/${id}/approve`, data),
+    rejectLeaderApp: (id, data) => request('PUT', `/admin/leader-applications/${id}/reject`, data),
+
+    // Finance
+    getFinanceRecords: (type, page) => {
+      const params = [];
+      if (type) params.push('type=' + type);
+      if (page) params.push('page=' + page);
+      const qs = params.length ? '?' + params.join('&') : '';
+      return request('GET', '/admin/finance/records' + qs);
+    },
+    getFinanceSummary: (dateRange) => request('GET', `/admin/finance/summary?dateRange=${dateRange}`),
+    reconcileFinance: () => request('POST', '/admin/finance/reconcile'),
+
+    // User reports
+    getUserReports: () => request('GET', '/admin/reports/users'),
+
+    // Operation logs
+    getLogs: (page) => request('GET', `/admin/logs${page ? '?page=' + page : ''}`),
+
+    // Product import/export
+    exportProducts: () => request('GET', '/admin/products/export'),
+    importProducts: (products) => request('POST', '/admin/products/import', { products }),
+
+    // Rider performance
+    getRiderPerformance: (id) => request('GET', `/admin/riders/${id}/performance`),
+
+    // Order dispatch
+    getDispatchOrders: () => request('GET', '/admin/orders/dispatch'),
+    assignRider: (orderId, riderId) => request('POST', `/admin/orders/${orderId}/assign-rider`, { riderId }),
+    adminCancelOrder: (orderId, reason) => request('POST', `/admin/orders/${orderId}/cancel`, { reason }),
+
+    // RBAC
+    getRoles: () => request('GET', '/admin/roles'),
+    createRole: (data) => request('POST', '/admin/roles', data),
+    updateRole: (id, data) => request('PUT', `/admin/roles/${id}`, data),
+    getAdminUsers: () => request('GET', '/admin/admin-users'),
+    createAdminUser: (data) => request('POST', '/admin/admin-users', data),
+    updateAdminUserStatus: (id, status) => request('PUT', `/admin/admin-users/${id}/status`, { status }),
+
+    // Inventory warnings
+    getInventoryWarnings: () => request('GET', '/admin/inventory/warnings'),
+
+    // Communities
+    getCommunities: () => request('GET', '/admin/communities'),
   };
 })();

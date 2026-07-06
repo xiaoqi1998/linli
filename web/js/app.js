@@ -32,7 +32,7 @@ const App = (function () {
     'product/:id': { render: (params) => ProductPage.render(params.id), tab: null, showTab: false, showCart: false, full: true },
     'cart': { render: () => CartPage.render(), tab: null, showTab: false, showCart: false, full: true },
     'order-confirm': { render: () => OrderConfirmPage.render(), tab: null, showTab: false, showCart: false, full: true },
-    'order-detail/:no': { render: (params) => OrderDetailPage.render(params.no), bind: () => { const m = document.getElementById('rider-map'); if (m) OrderDetailPage.mountRiderMap(location.hash.split('/')[2]); }, tab: null, showTab: false, showCart: false, full: true },
+    'order-detail/:no': { render: (params) => OrderDetailPage.render(params.no), bind: () => { const m = document.getElementById('rider-map'); if (m) OrderDetailPage.mountRiderMap(location.hash.split('/')[2]); }, module: OrderDetailPage, tab: null, showTab: false, showCart: false, full: true },
     'group-buy': { render: () => GroupBuyPage.render(), tab: null, showTab: false, showCart: false },
     'group-buy/:id': { render: (params) => GroupBuyPage.renderDetail(params.id), tab: null, showTab: false, showCart: false, full: true },
     'addresses': { render: () => MemberPage.renderAddresses(), tab: null, showTab: false, showCart: false, full: true },
@@ -68,6 +68,8 @@ const App = (function () {
     return { route: routes['home'], params: {} };
   }
 
+  let _currentPage = null;
+
   async function navigate() {
     const { routeKey, param } = parseHash();
     const { route, params } = matchRoute(routeKey, param);
@@ -77,6 +79,12 @@ const App = (function () {
       location.hash = '#/auth';
       return;
     }
+
+    // Cleanup previous page
+    if (_currentPage && _currentPage.cleanup) {
+      try { _currentPage.cleanup(); } catch (e) {}
+    }
+    _currentPage = route.module || null;
 
     state.currentRoute = routeKey;
 
@@ -411,9 +419,18 @@ const App = (function () {
       }
     }
 
-    // Load community
+    // Load community: 自动定位(GPS→IP→默认三级降级)
+    // 在 HTTP 环境下IP定位很快, 等它完成后再渲染首页; 有3秒超时保护
     try {
-      state.community = await API.getCommunity();
+      if (typeof HomePage !== 'undefined' && HomePage.autoLocate) {
+        await Promise.race([
+          HomePage.autoLocate(true),
+          new Promise(resolve => setTimeout(resolve, 3000)),
+        ]);
+      }
+      if (!state.community) {
+        state.community = await API.getCommunity();
+      }
     } catch (e) {
       state.community = API.mock.COMMUNITY;
     }
@@ -436,7 +453,7 @@ const App = (function () {
   // ---- Public API ----
   return {
     state,
-    init, navigate, go, back,
+    init, navigate, render: navigate, go, back,
     toast, showModal, closeModal, showSheet, closeSheet,
     refreshCart, updateCartFloat, addToCart, getCartCount, getCartTotal, getSelectedItems,
     fmtMoney, tagLabel, tagClass, productImgHtml, renderProductCard, statusText, statusClass,

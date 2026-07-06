@@ -6,32 +6,69 @@ const { createMessage } = require('./messages');
 const { simulateDeliveryFlow } = require('../delivery-simulator');
 
 /**
+ * 解析代付 Token, 含过期校验 (24小时有效)
+ * Token 格式: base64(orderNo:userId:timestamp)
+ * @returns {{orderNo, userId, createdAt}|null}
+ */
+function parseProxyToken(token) {
+  try {
+    const decoded = Buffer.from(token, 'base64').toString('utf-8');
+    const parts = decoded.split(':');
+    if (parts.length < 2) return null;
+    const orderNo = parts[0];
+    const userId = parts[1];
+    const createdAt = parts[2] ? parseInt(parts[2]) : 0;
+
+    // 如果有时间戳, 校验 24 小时有效期
+    if (createdAt > 0) {
+      const elapsed = Date.now() - createdAt;
+      if (elapsed > 24 * 60 * 60 * 1000) {
+        return { expired: true };
+      }
+    }
+    return { orderNo, userId, createdAt };
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * 生成代付 Token (含时间戳)
+ */
+function generateProxyToken(orderNo, userId) {
+  const raw = `${orderNo}:${userId}:${Date.now()}`;
+  return Buffer.from(raw, 'utf-8').toString('base64');
+}
+
+/**
  * GET /api/v1/proxy-pay/:token
  * 获取代付订单信息 (无需登录)
  */
 router.get('/:token', (req, res) => {
   const { token } = req.params;
-  try {
-    const decoded = Buffer.from(token, 'base64').toString('utf-8');
-    const [orderNo, userId] = decoded.split(':');
-    const order = db.prepare(`SELECT * FROM \`order\` WHERE order_no = ? AND user_id = ?`).get(orderNo, userId);
-    if (!order) {
-      return error(res, '代付链接无效或订单不存在', 404);
-    }
-    const items = db.prepare(`SELECT * FROM order_item WHERE order_id = ?`).all(order.id);
-    const user = db.prepare(`SELECT nick_name FROM user WHERE id = ?`).get(userId);
-    const addressSnapshot = JSON.parse(order.address_snapshot || '{}');
-    return success(res, {
-      orderNo: order.order_no,
-      payAmount: order.pay_amount,
-      status: order.status,
-      items: items.map(it => ({ name: it.sku_name, spec: it.spec_name, price: it.price, quantity: it.quantity })),
-      requesterName: user?.nick_name || '家人',
-      address: addressSnapshot,
-    });
-  } catch (e) {
+  const parsed = parseProxyToken(token);
+  if (!parsed) {
     return error(res, '代付链接无效', 400);
   }
+  if (parsed.expired) {
+    return error(res, '代付链接已过期（有效期24小时），请重新发起代付', 410);
+  }
+  const { orderNo, userId } = parsed;
+  const order = db.prepare(`SELECT * FROM \`order\` WHERE order_no = ? AND user_id = ?`).get(orderNo, userId);
+  if (!order) {
+    return error(res, '代付链接无效或订单不存在', 404);
+  }
+  const items = db.prepare(`SELECT * FROM order_item WHERE order_id = ?`).all(order.id);
+  const user = db.prepare(`SELECT nick_name FROM user WHERE id = ?`).get(userId);
+  const addressSnapshot = JSON.parse(order.address_snapshot || '{}');
+  return success(res, {
+    orderNo: order.order_no,
+    payAmount: order.pay_amount,
+    status: order.status,
+    items: items.map(it => ({ name: it.sku_name, spec: it.spec_name, price: it.price, quantity: it.quantity })),
+    requesterName: user?.nick_name || '家人',
+    address: addressSnapshot,
+  });
 });
 
 /**
@@ -40,13 +77,14 @@ router.get('/:token', (req, res) => {
  */
 router.post('/:token/pay', (req, res) => {
   const { token } = req.params;
-  let orderNo, userId;
-  try {
-    const decoded = Buffer.from(token, 'base64').toString('utf-8');
-    [orderNo, userId] = decoded.split(':');
-  } catch (e) {
+  const parsed = parseProxyToken(token);
+  if (!parsed) {
     return error(res, '代付链接无效', 400);
   }
+  if (parsed.expired) {
+    return error(res, '代付链接已过期，请重新发起代付', 410);
+  }
+  const { orderNo, userId } = parsed;
 
   const order = db.prepare(`SELECT * FROM \`order\` WHERE order_no = ? AND user_id = ?`).get(orderNo, userId);
   if (!order) {

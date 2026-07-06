@@ -35,3 +35,9 @@ build/
 # 备份文件
 *.bak
 *.bak.*
+
+# 生成的大体积图片资源（AI 生成的商品/分类/头像/banner，部署时单独同步或重新生成）
+server/uploads/
+
+# 本地工具数据（含记忆/配置，不入库）
+.workbuddy/

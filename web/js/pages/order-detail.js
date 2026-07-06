@@ -16,16 +16,26 @@ const OrderDetailPage = (function () {
 
     const statusFlow = [
       { status: 10, label: '待付款' },
-      { status: 20, label: '待配送' },
+      { status: 20, label: '待接单' },
+      { status: 25, label: '待取货' },
       { status: 30, label: '配送中' },
       { status: 40, label: '待确认' },
       { status: 50, label: '已完成' },
     ];
 
+    let displayStatus = order.status;
+    if (order.status === 30) {
+      if (order.deliveryStatus === 1 || order.deliveryStatus === '1') {
+        displayStatus = 25;
+      } else if (order.deliveryStatus === 2 || order.deliveryStatus === '2') {
+        displayStatus = 30;
+      }
+    }
+
     let timelineHtml = '<div class="order-timeline">';
     statusFlow.forEach(s => {
-      const done = order.status >= s.status;
-      const current = order.status === s.status;
+      const done = displayStatus >= s.status;
+      const current = displayStatus === s.status;
       timelineHtml += `
         <div class="timeline-item ${done ? 'done' : ''} ${current ? 'current' : ''}">
           <div class="timeline-dot"></div>
@@ -36,7 +46,9 @@ const OrderDetailPage = (function () {
     timelineHtml += '</div>';
 
     let itemsHtml = '<div class="order-items">';
-    (order.items || []).forEach(item => {
+    _currentOrderItems = order.items || [];
+    (order.items || []).forEach((item, idx) => {
+      const itemSkuId = item.skuId || item.sku_id || item.id;
       itemsHtml += `
         <div class="order-item-row">
           <span class="product-emoji ${item.bg || 'bg-veg'}">${item.emoji || '📦'}</span>
@@ -46,6 +58,7 @@ const OrderDetailPage = (function () {
           </div>
           <span class="order-item-price">¥${(item.price * item.quantity).toFixed(2)}</span>
         </div>
+        ${order.status === 50 ? `<div style="text-align:right;margin-top:4px;padding-right:4px;"><button style="padding:4px 14px;font-size:12px;border:1.5px solid var(--color-primary);border-radius:6px;background:#fff;color:var(--color-primary);font-weight:600;" onclick="OrderDetailPage.writeReview('${order.id}', ${itemSkuId}, ${idx})">写评价</button></div>` : ''}
       `;
     });
     itemsHtml += '</div>';
@@ -252,6 +265,8 @@ const OrderDetailPage = (function () {
   let _currentOrderNo = null;
   let _riderMapInst = null;
   let _riderPollTimer = null;
+  let _currentOrderItems = [];
+  let _selectedReviewStar = 5;
 
   function mountRiderMap(orderNo) {
     _currentOrderNo = orderNo;
@@ -272,7 +287,7 @@ const OrderDetailPage = (function () {
       }
       renderRiderMap(container, data);
 
-      // 配送中: 每 2 秒轮询更新骑手位置
+      // 配送中: 每 1 秒轮询更新骑手位置 (与后端模拟步频一致)
       if (data.orderStatus === 30) {
         if (_riderPollTimer) clearInterval(_riderPollTimer);
         _riderPollTimer = setInterval(async () => {
@@ -288,16 +303,19 @@ const OrderDetailPage = (function () {
             // 仅更新骑手标记位置
             if (_riderMapInst && _riderMapInst.riderMarker) {
               _riderMapInst.riderMarker.setLatLng([newData.rider.latitude, newData.rider.longitude]);
+              // 同时重绘路径 (从骑手当前位置到目的地)
+              if (_riderMapInst.routeLine) {
+                _riderMapInst.routeLine.setLatLngs([[newData.rider.latitude, newData.rider.longitude], _riderMapInst.destLatLng]);
+              }
             }
             const infoEl = document.getElementById('rider-info');
             if (infoEl) {
-              const dist = newData.rider.locationUpdatedAt ? '' : '';
               infoEl.innerHTML = `🛵 <strong>${newData.rider.name}</strong> · ${newData.rider.phone} · 位置更新于 ${newData.rider.locationUpdatedAt || '刚刚'}`;
             }
           } catch (e) {
             // 忽略轮询错误
           }
-        }, 2000);
+        }, 1000);
       }
     } catch (e) {
       container.innerHTML = '<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:var(--color-muted);font-size:13px;">骑手位置加载失败</div>';
@@ -331,7 +349,7 @@ const OrderDetailPage = (function () {
     if (!map) return;
 
     // 配送路径
-    L.polyline([[rider.latitude, rider.longitude], [dest.latitude, dest.longitude]], {
+    const routeLine = L.polyline([[rider.latitude, rider.longitude], [dest.latitude, dest.longitude]], {
       color: '#ff7043', weight: 3, opacity: 0.6, dashArray: '6, 8',
     }).addTo(map);
 
@@ -355,7 +373,7 @@ const OrderDetailPage = (function () {
 
     map.fitBounds(L.latLngBounds([[rider.latitude, rider.longitude], [dest.latitude, dest.longitude]]).pad(0.3));
 
-    _riderMapInst = { map, riderMarker };
+    _riderMapInst = { map, riderMarker, routeLine, destLatLng: [dest.latitude, dest.longitude] };
 
     // 信息条
     const infoEl = document.getElementById('rider-info');
@@ -364,5 +382,76 @@ const OrderDetailPage = (function () {
     }
   }
 
-  return { render, cancel, pay, reqProxy, confirm, rebuy, showAfterSale, mountRiderMap };
+  function cleanup() {
+    if (_riderPollTimer) {
+      clearInterval(_riderPollTimer);
+      _riderPollTimer = null;
+    }
+    _riderMapInst = null;
+    _currentOrderNo = null;
+  }
+
+  /* ---- Write Review (for completed orders) ---- */
+  function writeReview(orderId, skuId, itemIdx) {
+    const item = _currentOrderItems[itemIdx] || {};
+    const skuName = item.name || '';
+    _selectedReviewStar = 5;
+    OrderDetailPage._reviewOrderId = orderId;
+    OrderDetailPage._reviewSkuId = skuId;
+
+    App.showSheet('写评价', `
+      <div style="padding:16px;">
+        <div style="font-size:14px;font-weight:600;margin-bottom:12px;">${skuName}</div>
+        <div class="form-group">
+          <label class="form-label">评分</label>
+          <div id="review-stars" style="display:flex;gap:8px;font-size:28px;">
+            ${[1, 2, 3, 4, 5].map(i => `<span data-star="${i}" onclick="OrderDetailPage.selectReviewStar(${i})" style="cursor:pointer;color:#ffc107;">★</span>`).join('')}
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">评价内容</label>
+          <textarea class="form-input" id="review-content" placeholder="分享您的使用体验..." rows="4" maxlength="500"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">图片链接（选填，多张用逗号分隔）</label>
+          <input type="text" class="form-input" id="review-images" placeholder="https://..." />
+        </div>
+        <div class="form-group" style="display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="review-anonymous" style="accent-color:var(--color-primary);width:18px;height:18px;" />
+          <label for="review-anonymous" style="margin:0;cursor:pointer;font-size:14px;">匿名评价</label>
+        </div>
+        <button class="btn btn-primary btn-block" onclick="OrderDetailPage.submitReviewForm()">提交评价</button>
+      </div>
+    `);
+  }
+
+  function selectReviewStar(star) {
+    _selectedReviewStar = star;
+    document.querySelectorAll('#review-stars span').forEach(el => {
+      const s = parseInt(el.dataset.star);
+      el.style.color = s <= star ? '#ffc107' : '#ddd';
+    });
+  }
+
+  async function submitReviewForm() {
+    const skuId = OrderDetailPage._reviewSkuId;
+    const orderId = OrderDetailPage._reviewOrderId;
+    const rating = _selectedReviewStar;
+    const content = document.getElementById('review-content') ? document.getElementById('review-content').value.trim() : '';
+    const imagesRaw = document.getElementById('review-images') ? document.getElementById('review-images').value.trim() : '';
+    const isAnonymous = document.getElementById('review-anonymous') ? document.getElementById('review-anonymous').checked : false;
+
+    if (!content) { App.toast('请输入评价内容'); return; }
+
+    const images = imagesRaw ? imagesRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+    try {
+      await API.submitReview({ skuId, orderId: orderId, rating, content, images, isAnonymous });
+      App.closeSheet();
+      App.toast('评价提交成功');
+    } catch (e) {
+      App.toast(e.message || '提交失败，请重试');
+    }
+  }
+
+  return { render, cancel, pay, reqProxy, confirm, rebuy, showAfterSale, mountRiderMap, cleanup, writeReview, selectReviewStar, submitReviewForm };
 })();

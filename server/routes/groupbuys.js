@@ -297,8 +297,8 @@ router.post('/:id/join', authMiddleware, (req, res) => {
     `).run(
       orderId, gb.sku_id, skuSpecId || gb.sku_spec_id,
       gb.sku_name, gb.main_image, gb.unit,
-      gb.group_price, gb.commission_rate || 5.00,
-      parseFloat((gb.group_price * (gb.commission_rate || 5.00) / 100).toFixed(2))
+      gb.group_price, gb.commission_rate ?? 5.00,
+      parseFloat((gb.group_price * (gb.commission_rate ?? 5.00) / 100).toFixed(2))
     );
 
     // 锁定库存 (拼团订单也进库存管控)

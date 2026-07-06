@@ -36,6 +36,28 @@ const HomePage = (function () {
   }
 
   async function loadData() {
+    // Track page view
+    API.trackEvent('home_page_view');
+
+    // Fetch user's selected community (update display if available)
+    try {
+      const userCommunity = await API.getUserCommunity();
+      if (userCommunity && userCommunity.id) {
+        App.state.community = {
+          id: userCommunity.id,
+          name: userCommunity.name,
+          address: userCommunity.address,
+          eta: userCommunity.eta || 30,
+        };
+        const nameEl = document.querySelector('.community-name');
+        if (nameEl) nameEl.textContent = userCommunity.name;
+        const etaEls = document.querySelectorAll('.community-eta span');
+        if (etaEls.length >= 2) etaEls[etaEls.length - 1].textContent = (parseInt(userCommunity.eta) || 30) + '分钟达';
+      }
+    } catch (e) {
+      // keep existing community from auto-locate
+    }
+
     try {
       const [products, categories, banners] = await Promise.all([
         API.getProducts({ pageSize: 100 }),
@@ -193,7 +215,7 @@ const HomePage = (function () {
     const soldOut = p.stock <= 0;
     const tags = (p.tags || []).slice(0, 2);
     return `
-      <div class="product-card" onclick="App.go('product/${p.id}')">
+      <div class="product-card" onclick="HomePage.viewProduct(${p.id})">
         <div class="product-img">
           <div class="product-img-bg ${p.bg}"></div>
           <span class="product-img-emoji">${p.emoji}</span>
@@ -252,6 +274,11 @@ const HomePage = (function () {
       return;
     }
     App.addToCart(productId, 1, p.specs && p.specs[0] ? p.specs[0].name : '');
+  }
+
+  function viewProduct(id) {
+    API.trackEvent('product_click', { skuId: id });
+    App.go('product/' + id);
   }
 
   function goCategory(catId) {
@@ -319,39 +346,66 @@ const HomePage = (function () {
     }
   }
 
-  async function autoLocate() {
-    if (!navigator.geolocation) {
-      App.toast('浏览器不支持定位，使用默认社区');
-      fallbackLocate();
-      return;
+  /**
+   * 自动定位: GPS → IP定位 → 默认社区 三级降级
+   * @param {boolean} silent - 静默模式(启动时调用), 不弹toast
+   */
+  async function autoLocate(silent) {
+    // 判断是否为安全上下文 (HTTPS 或 localhost)
+    const isSecure = location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    const isNonSecureHttp = !isSecure && location.protocol === 'http:';
+
+    // 第1级: 浏览器 Geolocation (仅在安全上下文下尝试, HTTP非安全上下文下浏览器会阻止, 直接跳过)
+    if (navigator.geolocation && isSecure) {
+      if (!silent) App.toast('正在定位...');
+      try {
+        const pos = await new Promise((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 6000, maximumAge: 60000 });
+        });
+        await doLocate(pos.coords.latitude, pos.coords.longitude, false, silent);
+        return;
+      } catch (err) {
+        // 用户拒绝授权或超时, 降级到IP定位
+      }
     }
-    App.toast('正在定位...');
-    navigator.geolocation.getCurrentPosition(async (pos) => {
-      const { latitude, longitude } = pos.coords;
-      await doLocate(latitude, longitude);
-    }, (err) => {
-      // 定位被拒绝或失败: 降级使用默认位置 (深圳南山 - seed 数据位置)
-      const isDenied = err.code === 1;
-      App.toast(isDenied ? '定位授权被拒绝，使用默认社区' : '定位失败，使用默认社区');
-      fallbackLocate();
-    }, { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 });
+
+    // 第2级: IP定位 (直接从浏览器调用 ip-api.com, 避免Docker NAT导致服务端拿不到真实IP)
+    if (!silent) App.toast('正在定位...');
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 4000);
+      const ipResp = await fetch('http://ip-api.com/json/?fields=status,message,lat,lon,city,regionName,country&lang=zh-CN', { signal: controller.signal });
+      clearTimeout(timer);
+      const ipJson = await ipResp.json();
+      if (ipJson.status === 'success' && ipJson.lat && ipJson.lon) {
+        await doLocate(ipJson.lat, ipJson.lon, false, silent, ipJson.city);
+        return;
+      }
+    } catch (e) {
+      // 客户端IP定位也失败, 尝试后端代理
+      try {
+        const ipResult = await API.ipLocate();
+        if (ipResult && ipResult.latitude && ipResult.longitude && ipResult.source !== 'default') {
+          await doLocate(ipResult.latitude, ipResult.longitude, false, silent, ipResult.city);
+          return;
+        }
+      } catch (e2) {}
+    }
+
+    // 第3级: 默认坐标 (深圳南山)
+    if (!silent) App.toast('定位不可用，已使用默认社区');
+    await fallbackLocate(silent);
   }
 
   // 降级定位: 使用默认坐标调用后端匹配最近社区
-  async function fallbackLocate() {
-    // 默认坐标: 深圳南山区 (seed 数据中社区所在位置)
-    await doLocate(22.5431, 113.9465, true);
+  async function fallbackLocate(silent) {
+    await doLocate(22.5431, 113.9465, true, silent);
   }
 
-  async function doLocate(latitude, longitude, isFallback) {
+  async function doLocate(latitude, longitude, isFallback, silent, cityName) {
     try {
       const result = await API.locateCommunity(latitude, longitude);
       if (result && result.community) {
-        if (!result.inRange) {
-          App.toast('您附近暂未开通服务，已为您选择最近社区');
-        } else if (!isFallback) {
-          App.toast('已定位到 ' + result.community.name);
-        }
         const c = result.community;
         App.state.community = {
           id: c.id,
@@ -362,14 +416,24 @@ const HomePage = (function () {
           eta: 30,
           distance: result.distance,
         };
+        if (silent) {
+          // 静默模式(app启动): 不弹toast, 不navigate, 让init()里的初始导航来渲染
+          return;
+        }
+        if (!result.inRange) {
+          App.toast('您附近暂未开通服务，已为您选择最近社区');
+        } else if (!isFallback) {
+          App.toast('已定位到 ' + (cityName ? cityName + ' · ' : '') + result.community.name);
+        }
         App.closeSheet();
         App.navigate();
       } else {
-        App.toast('未找到附近社区，请手动选择');
+        if (!silent) App.toast('未找到附近社区，请手动选择');
       }
     } catch (e) {
       // 后端也失败: 使用 mock 社区
       App.state.community = API.mock.COMMUNITY;
+      if (silent) return;
       App.closeSheet();
       App.navigate();
       App.toast('定位服务异常，已使用默认社区');
@@ -388,11 +452,13 @@ const HomePage = (function () {
         longitude: c.longitude,
         eta: c.eta || 30,
       };
+      // Persist community selection to backend (silently ignore errors)
+      API.setUserCommunity(c.id).catch(() => {});
       App.closeSheet();
       App.toast('已切换至' + c.name);
       App.navigate();
     }
   }
 
-  return { render, quickAdd, goCategory, viewAll, openSearch, switchCommunity, selectCommunity, autoLocate };
+  return { render, quickAdd, viewProduct, goCategory, viewAll, openSearch, switchCommunity, selectCommunity, autoLocate };
 })();

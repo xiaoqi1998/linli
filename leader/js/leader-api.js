@@ -47,5 +47,32 @@ const LeaderAPI = (function () {
 
     // Create Group Buy
     createGroupBuy: (data) => request('POST', '/leader/group-buys', data),
+
+    // Withdrawal
+    requestWithdraw: (amount) => request('POST', '/leader/withdraw', { amount }),
+    getWithdrawHistory: () => request('GET', '/leader/withdraw/history'),
+
+    // Refunds (after-sales)
+    getRefunds: () => request('GET', '/leader/refunds'),
+    approveRefund: (id) => request('POST', `/leader/refunds/${id}/approve`),
+    rejectRefund: (id, reason) => request('POST', `/leader/refunds/${id}/reject`, { reason }),
+
+    // Customer management
+    getCustomers: () => request('GET', '/leader/customers'),
+    getCustomerSegments: () => request('GET', '/leader/customers/segments'),
+    addCustomerTag: (userId, tag) => request('POST', `/leader/customers/${userId}/tag`, { tag }),
+    removeCustomerTag: (userId, tag) => request('DELETE', `/leader/customers/${userId}/tag/${tag}`),
+    sendCustomerCoupon: (userId, couponId) => request('POST', `/leader/customers/${userId}/coupon`, { couponId }),
+
+    // Template messages
+    getTemplateMessages: () => request('GET', '/leader/template-messages'),
+    sendTemplateMessage: (data) => request('POST', '/leader/template-messages/send', data),
+    getTemplateMessageHistory: () => request('GET', '/leader/template-messages/history'),
+
+    // Leader application
+    applyLeader: (data) => request('POST', '/leader/apply', data),
+
+    // Order detail
+    getOrderDetail: (id) => request('GET', `/leader/orders/${id}`),
   };
 })();

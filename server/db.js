@@ -470,20 +470,37 @@ CREATE TABLE IF NOT EXISTS rider (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   phone TEXT,
-  warehouse_id INTEGER NOT NULL,
+  warehouse_id INTEGER NOT NULL DEFAULT 0,
   status INTEGER NOT NULL DEFAULT 1,
   lat REAL,
   lng REAL,
   current_orders INTEGER NOT NULL DEFAULT 0,
   location_updated_at TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_rider_status ON rider(status);
+
+-- ----------------------------------------------------------------------------
+-- 24-1. 骑手-站点关联表 (多对多)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS rider_warehouse (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  rider_id INTEGER NOT NULL,
+  warehouse_id INTEGER NOT NULL,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  status INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(rider_id, warehouse_id),
+  FOREIGN KEY (rider_id) REFERENCES rider(id),
   FOREIGN KEY (warehouse_id) REFERENCES warehouse(id)
 );
-CREATE INDEX IF NOT EXISTS idx_rider_warehouse_id ON rider(warehouse_id);
+CREATE INDEX IF NOT EXISTS idx_rw_rider_id ON rider_warehouse(rider_id);
+CREATE INDEX IF NOT EXISTS idx_rw_warehouse_id ON rider_warehouse(warehouse_id);
 
 -- ----------------------------------------------------------------------------
 -- 25. 骑手配送表
+-- 配送状态: 0=待分配, 1=待取货(骑手已接单), 2=配送中(骑手已取货), 3=已送达, 4=已取消
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS rider_delivery (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -491,8 +508,11 @@ CREATE TABLE IF NOT EXISTS rider_delivery (
   rider_id INTEGER NOT NULL,
   status INTEGER NOT NULL DEFAULT 0,
   accept_time TEXT,
+  arrive_pick_time TEXT,
   pick_time TEXT,
+  arrive_deliver_time TEXT,
   deliver_time TEXT,
+  distance REAL NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (order_id) REFERENCES "order"(id),
@@ -500,6 +520,7 @@ CREATE TABLE IF NOT EXISTS rider_delivery (
 );
 CREATE INDEX IF NOT EXISTS idx_rider_delivery_order_id ON rider_delivery(order_id);
 CREATE INDEX IF NOT EXISTS idx_rider_delivery_rider_id ON rider_delivery(rider_id);
+CREATE INDEX IF NOT EXISTS idx_rider_delivery_status ON rider_delivery(status);
 
 -- ----------------------------------------------------------------------------
 -- 26. 退款表
@@ -594,7 +615,223 @@ CREATE TABLE IF NOT EXISTS user_message (
 );
 CREATE INDEX IF NOT EXISTS idx_user_message_user_id ON user_message(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_message_is_read ON user_message(is_read);
+
+-- ----------------------------------------------------------------------------
+-- 32. 商品评价表
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS product_review (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  sku_id INTEGER NOT NULL,
+  order_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  rating INTEGER NOT NULL DEFAULT 5,
+  content TEXT,
+  images TEXT,
+  is_anonymous INTEGER NOT NULL DEFAULT 0,
+  status INTEGER NOT NULL DEFAULT 1,
+  leader_reply TEXT,
+  leader_reply_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (sku_id) REFERENCES sku(id),
+  FOREIGN KEY (order_id) REFERENCES "order"(id),
+  FOREIGN KEY (user_id) REFERENCES user(id)
+);
+CREATE INDEX IF NOT EXISTS idx_review_sku_id ON product_review(sku_id);
+CREATE INDEX IF NOT EXISTS idx_review_user_id ON product_review(user_id);
+
+-- ----------------------------------------------------------------------------
+-- 33. 用户-社区关联表 (动态关联, 替代硬编码社区ID)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS user_community (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  community_id INTEGER NOT NULL,
+  is_current INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(user_id, community_id),
+  FOREIGN KEY (user_id) REFERENCES user(id),
+  FOREIGN KEY (community_id) REFERENCES community(id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_community_user_id ON user_community(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_community_current ON user_community(user_id, is_current);
+
+-- ----------------------------------------------------------------------------
+-- 34. 签到记录表
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS user_check_in (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  check_date TEXT NOT NULL,
+  continuous_days INTEGER NOT NULL DEFAULT 1,
+  points_earned INTEGER NOT NULL DEFAULT 5,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(user_id, check_date),
+  FOREIGN KEY (user_id) REFERENCES user(id)
+);
+CREATE INDEX IF NOT EXISTS idx_check_in_user_id ON user_check_in(user_id);
+
+-- ----------------------------------------------------------------------------
+-- 35. Banner 管理表
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS banner (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  subtitle TEXT,
+  image TEXT,
+  bg TEXT NOT NULL DEFAULT 'banner-fresh',
+  link_type TEXT,
+  link_value TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  community_ids TEXT,
+  status INTEGER NOT NULL DEFAULT 1,
+  valid_start TEXT,
+  valid_end TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ----------------------------------------------------------------------------
+-- 36. 社群模板消息发送记录表
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS template_message_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  leader_id INTEGER NOT NULL,
+  template_type TEXT NOT NULL,
+  content TEXT NOT NULL,
+  share_url TEXT,
+  community_id INTEGER,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (leader_id) REFERENCES leader(id)
+);
+CREATE INDEX IF NOT EXISTS idx_tmlog_leader_id ON template_message_log(leader_id);
+
+-- ----------------------------------------------------------------------------
+-- 37. 会员规则配置表
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS member_rule (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  level INTEGER NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  min_consume REAL NOT NULL DEFAULT 0,
+  min_orders INTEGER NOT NULL DEFAULT 0,
+  discount_rate REAL NOT NULL DEFAULT 1.00,
+  free_delivery_count INTEGER NOT NULL DEFAULT 0,
+  priority_support INTEGER NOT NULL DEFAULT 0,
+  status INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ----------------------------------------------------------------------------
+-- 38. 埋点事件表
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS event_track (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_name TEXT NOT NULL,
+  user_id INTEGER,
+  community_id INTEGER,
+  properties TEXT,
+  ip TEXT,
+  user_agent TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_event_track_name ON event_track(event_name);
+CREATE INDEX IF NOT EXISTS idx_event_track_user_id ON event_track(user_id);
+
+-- ----------------------------------------------------------------------------
+-- 39. 团长客户标签表
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS leader_customer_tag (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  leader_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  tag TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(leader_id, user_id, tag),
+  FOREIGN KEY (leader_id) REFERENCES leader(id),
+  FOREIGN KEY (user_id) REFERENCES user(id)
+);
+CREATE INDEX IF NOT EXISTS idx_lct_leader_user ON leader_customer_tag(leader_id, user_id);
+
+-- ----------------------------------------------------------------------------
+-- 40. 团长申请表
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS leader_application (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  phone TEXT NOT NULL,
+  community_id INTEGER NOT NULL,
+  reason TEXT,
+  status INTEGER NOT NULL DEFAULT 0,
+  reject_reason TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES user(id),
+  FOREIGN KEY (community_id) REFERENCES community(id)
+);
+CREATE INDEX IF NOT EXISTS idx_leader_app_status ON leader_application(status);
+
+-- ----------------------------------------------------------------------------
+-- 41. 资金流水表
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS finance_record (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  type TEXT NOT NULL,
+  order_id INTEGER,
+  amount REAL NOT NULL DEFAULT 0,
+  direction TEXT NOT NULL,
+  description TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (order_id) REFERENCES "order"(id)
+);
+CREATE INDEX IF NOT EXISTS idx_finance_type ON finance_record(type);
+CREATE INDEX IF NOT EXISTS idx_finance_created ON finance_record(created_at);
+
+-- ----------------------------------------------------------------------------
+-- 42. 骑手评价/投诉表
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS rider_rating (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_id INTEGER NOT NULL,
+  rider_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  rating INTEGER NOT NULL DEFAULT 5,
+  is_complaint INTEGER NOT NULL DEFAULT 0,
+  content TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (order_id) REFERENCES "order"(id),
+  FOREIGN KEY (rider_id) REFERENCES rider(id),
+  FOREIGN KEY (user_id) REFERENCES user(id)
+);
+CREATE INDEX IF NOT EXISTS idx_rider_rating_rider_id ON rider_rating(rider_id);
 `);
+
+// ----------------------------------------------------------------------------
+// 初始化默认会员规则
+// ----------------------------------------------------------------------------
+const defaultRules = db.prepare(`SELECT COUNT(*) as cnt FROM member_rule`).get();
+if (defaultRules.cnt === 0) {
+  db.prepare(`INSERT INTO member_rule (level, name, min_consume, min_orders, discount_rate, free_delivery_count, priority_support) VALUES (1, '新邻居', 0, 0, 1.00, 0, 0)`).run();
+  db.prepare(`INSERT INTO member_rule (level, name, min_consume, min_orders, discount_rate, free_delivery_count, priority_support) VALUES (2, '老熟人', 199, 0, 1.00, 2, 0)`).run();
+  db.prepare(`INSERT INTO member_rule (level, name, min_consume, min_orders, discount_rate, free_delivery_count, priority_support) VALUES (3, '老街坊', 999, 10, 0.95, 4, 1)`).run();
+}
+
+// 初始化默认管理员角色和账号
+const defaultAdminRole = db.prepare(`SELECT COUNT(*) as cnt FROM admin_role`).get();
+if (defaultAdminRole.cnt === 0) {
+  db.prepare(`INSERT INTO admin_role (id, name, permissions) VALUES (1, '超级管理员', '["*"]')`).run();
+  db.prepare(`INSERT INTO admin_role (id, name, permissions) VALUES (2, '运营经理', '["products","orders","coupons","leaders","riders","inventory","reports","banners","community_sku","member_rules"]')`).run();
+  db.prepare(`INSERT INTO admin_role (id, name, permissions) VALUES (3, '财务人员', '["finance","reports","leaders"]')`).run();
+  db.prepare(`INSERT INTO admin_role (id, name, permissions) VALUES (4, '客服', '["orders","users"]')`).run();
+  db.prepare(`INSERT INTO admin_role (id, name, permissions) VALUES (5, '城市经理', '["orders","leaders","riders","reports"]')`).run();
+}
+const defaultAdmin = db.prepare(`SELECT COUNT(*) as cnt FROM admin_user`).get();
+if (defaultAdmin.cnt === 0) {
+  const bcrypt = require('bcryptjs');
+  const hash = bcrypt.hashSync('admin123', 12);
+  db.prepare(`INSERT INTO admin_user (username, password, real_name, role_id, status) VALUES (?, ?, ?, 1, 1)`).run('admin', hash, '超级管理员');
+}
 
 module.exports = db;
 

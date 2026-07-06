@@ -160,11 +160,35 @@ router.post('/', (req, res) => {
     return error(res, '收货地址不存在', 404);
   }
 
-  // 获取用户所属社区: 优先请求体 → 购物车 → 默认 1
+  // 获取用户所属社区: 优先请求体 → user_community 关联表 → 购物车 → 最近订单 → 默认 1
   let communityId = req.body.communityId;
   if (!communityId) {
+    // 从 user_community 表获取当前社区
+    const uc = db.prepare(`SELECT community_id FROM user_community WHERE user_id = ? AND is_current = 1 ORDER BY id DESC LIMIT 1`).get(req.userId);
+    if (uc) {
+      communityId = uc.community_id;
+    }
+  }
+  if (!communityId) {
     const cartItem = db.prepare(`SELECT community_id FROM cart_items WHERE user_id = ? AND community_id IS NOT NULL ORDER BY id DESC LIMIT 1`).get(req.userId);
-    communityId = cartItem?.community_id || 1;
+    communityId = cartItem?.community_id || null;
+  }
+  if (!communityId) {
+    // 从用户最近订单获取社区
+    const recentOrder = db.prepare(`SELECT community_id FROM \`order\` WHERE user_id = ? ORDER BY id DESC LIMIT 1`).get(req.userId);
+    communityId = recentOrder?.community_id || null;
+  }
+  if (!communityId) {
+    return error(res, '请先选择您所在的社区', 400);
+  }
+  // 记录用户-社区关联
+  const existingUC = db.prepare(`SELECT id FROM user_community WHERE user_id = ? AND community_id = ?`).get(req.userId, communityId);
+  if (!existingUC) {
+    db.prepare(`UPDATE user_community SET is_current = 0 WHERE user_id = ?`).run(req.userId);
+    db.prepare(`INSERT OR IGNORE INTO user_community (user_id, community_id, is_current) VALUES (?, ?, 1)`).run(req.userId, communityId);
+  } else {
+    db.prepare(`UPDATE user_community SET is_current = 0 WHERE user_id = ?`).run(req.userId);
+    db.prepare(`UPDATE user_community SET is_current = 1 WHERE user_id = ? AND community_id = ?`).run(req.userId, communityId);
   }
   // 查询社区对应的团长和前置仓
   const community = db.prepare(`SELECT id, leader_id FROM community WHERE id = ?`).get(communityId);
@@ -177,6 +201,10 @@ router.post('/', (req, res) => {
   let skuTotal = 0;
   const orderItems = [];
   for (const item of items) {
+    const qty = parseInt(item.quantity, 10);
+    if (!Number.isInteger(qty) || qty <= 0) {
+      return error(res, `商品 ${item.skuId} 数量无效`, 400);
+    }
     const sku = db.prepare(`SELECT * FROM sku WHERE id = ? AND status = 1`).get(item.skuId);
     if (!sku) {
       return error(res, `商品 ${item.skuId} 不存在或已下架`, 400);
@@ -194,13 +222,13 @@ router.post('/', (req, res) => {
 
     // 校验库存
     const inv = db.prepare(`SELECT * FROM inventory WHERE warehouse_id = ? AND sku_id = ?`).get(warehouseId, item.skuId);
-    if (!inv || inv.available_stock < item.quantity) {
+    if (!inv || inv.available_stock < qty) {
       return error(res, `${sku.name} 库存不足`, 409);
     }
 
-    const subtotal = price * item.quantity;
+    const subtotal = price * qty;
     skuTotal += subtotal;
-    orderItems.push({ sku, price, specName, quantity: item.quantity, subtotal });
+    orderItems.push({ sku, price, specName, quantity: qty, subtotal });
   }
 
   // 配送费
@@ -241,7 +269,7 @@ router.post('/', (req, res) => {
     }
   }
 
-  const payAmount = skuTotal + actualDeliveryFee - couponDiscount;
+  const payAmount = Math.max(0, skuTotal + actualDeliveryFee - couponDiscount);
   const orderNo = 'O' + new Date().toISOString().replace(/[-T:.Z]/g, '').substring(0, 14) + Math.floor(Math.random() * 10000).toString().padStart(4, '0');
   const expireAt = new Date(Date.now() + 15 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
 
@@ -268,7 +296,7 @@ router.post('/', (req, res) => {
     const orderId = result.lastInsertRowid;
 
     for (const oi of orderItems) {
-      const commissionRate = oi.sku.commission_rate || 8.00;
+      const commissionRate = oi.sku.commission_rate ?? 8.00;
       const commissionAmount = parseFloat((oi.price * oi.quantity * commissionRate / 100).toFixed(2));
       insertItem.run(orderId, oi.sku.id, oi.sku.name, oi.sku.main_image, oi.specName, oi.price, oi.quantity, commissionRate, commissionAmount);
       const invResult = updateInventory.run(oi.quantity, oi.quantity, warehouseId, oi.sku.id, oi.quantity);
@@ -396,6 +424,19 @@ router.post('/:orderNo/pay', (req, res) => {
 
     // 9. 发送通知
     createMessage(order.user_id, 'order_paid', '支付成功', `订单 ${order.order_no} 支付成功，团长正在备货`, order.id);
+
+    // 10. 记录资金流水 (收入)
+    db.prepare(`INSERT INTO finance_record (type, order_id, amount, direction, description, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run('order_income', order.id, order.pay_amount, 'in', `订单 ${order.order_no} 收入`, nowStr);
+
+    // 11. 记录佣金支出 (待结算, 实际结算在订单完成时)
+    if (order.leader_id) {
+      const commission = items.reduce((sum, it) => sum + (it.price * it.quantity * (it.commission_rate ?? 8) / 100), 0);
+      if (commission > 0) {
+        db.prepare(`INSERT INTO finance_record (type, order_id, amount, direction, description, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+          .run('commission_pending', order.id, parseFloat(commission.toFixed(2)), 'out', `订单 ${order.order_no} 待结算佣金`, nowStr);
+      }
+    }
   });
 
   try {
@@ -644,6 +685,108 @@ router.get('/:orderNo/rider-location', (req, res) => {
     dest: { latitude: destLat, longitude: destLng },
     orderStatus: order.status,
   });
+});
+
+/**
+ * POST /api/v1/orders/payment-callback
+ * 支付回调验签 (微信/支付宝回调入口)
+ * Demo: 直接处理, 生产环境需验签
+ * Body: { orderNo, transactionId, amount, sign }
+ */
+router.post('/payment-callback', (req, res) => {
+  const { orderNo, transactionId, amount, sign } = req.body;
+
+  if (!orderNo || !transactionId) {
+    return error(res, '参数缺失', 400);
+  }
+
+  // 生产环境: 验证签名
+  // const expectedSign = crypto.createHmac('sha256', process.env.PAY_SIGN_KEY).update(orderNo + amount).digest('hex');
+  // if (sign !== expectedSign) return error(res, '签名验证失败', 403);
+
+  const order = db.prepare(`SELECT * FROM \`order\` WHERE order_no = ?`).get(orderNo);
+  if (!order) {
+    return error(res, '订单不存在', 404);
+  }
+
+  // 金额验证 (服务端计算, 不信任客户端传入的金额)
+  if (Math.abs(parseFloat(amount) - order.pay_amount) > 0.01) {
+    return error(res, '金额不匹配', 400);
+  }
+
+  // 幂等性: 已支付直接返回成功
+  if (order.pay_status === 1) {
+    return success(res, { orderNo, paySuccess: true }, '订单已支付');
+  }
+
+  if (order.status !== 10) {
+    return error(res, '订单状态不正确', 400);
+  }
+
+  // 复用支付逻辑 (与 /:orderNo/pay 相同)
+  const nowStr = now();
+  const txnNo = generateTransactionNo();
+  const items = db.prepare(`SELECT * FROM order_item WHERE order_id = ?`).all(order.id);
+
+  const payTxn = db.transaction(() => {
+    db.prepare(`UPDATE \`order\` SET status = 20, pay_status = 1, pay_time = ?, pay_way = 1, wx_transaction_id = ? WHERE id = ? AND pay_status = 0`)
+      .run(nowStr, transactionId, order.id);
+
+    db.prepare(`INSERT INTO payment_transaction (order_id, transaction_no, amount, pay_way, status, wx_transaction_id, created_at, updated_at) VALUES (?, ?, ?, 1, 1, ?, ?, ?)`)
+      .run(order.id, txnNo, order.pay_amount, transactionId, nowStr, nowStr);
+
+    const updateInv = db.prepare(`UPDATE inventory SET locked_stock = locked_stock - ? WHERE warehouse_id = ? AND sku_id = ?`);
+    for (const item of items) {
+      updateInv.run(item.quantity, order.warehouse_id, item.sku_id);
+    }
+
+    const updateSales = db.prepare(`UPDATE sku SET sales_count = sales_count + ? WHERE id = ?`);
+    for (const item of items) {
+      updateSales.run(item.quantity, item.sku_id);
+    }
+
+    const earnedPoints = Math.floor(order.pay_amount);
+    const user = db.prepare(`SELECT points, total_consume, member_level FROM user WHERE id = ?`).get(order.user_id);
+    db.prepare(`UPDATE user SET total_consume = total_consume + ?, order_count = order_count + 1, points = points + ? WHERE id = ?`)
+      .run(order.pay_amount, earnedPoints, order.user_id);
+    db.prepare(`INSERT INTO point_transaction (user_id, type, points, balance, remark, order_id) VALUES (?, 1, ?, ?, '消费获得', ?)`)
+      .run(order.user_id, earnedPoints, (user.points + earnedPoints), order.id);
+
+    const newTotalConsume = user.total_consume + order.pay_amount;
+    let newLevel = user.member_level;
+    if (newTotalConsume >= 999) newLevel = 3;
+    else if (newTotalConsume >= 199) newLevel = 2;
+    if (newLevel > user.member_level) {
+      db.prepare(`UPDATE user SET member_level = ? WHERE id = ?`).run(newLevel, order.user_id);
+    }
+
+    db.prepare(`INSERT INTO order_status_log (order_id, from_status, to_status, operator, remark) VALUES (?, 10, 20, ?, '支付回调成功')`)
+      .run(order.id, 'system');
+
+    createMessage(order.user_id, 'order_paid', '支付成功', `订单 ${order.order_no} 支付成功，团长正在备货`, order.id);
+
+    // 资金流水
+    db.prepare(`INSERT INTO finance_record (type, order_id, amount, direction, description, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run('order_income', order.id, order.pay_amount, 'in', `订单 ${order.order_no} 收入`, nowStr);
+  });
+
+  try {
+    payTxn();
+  } catch (e) {
+    return error(res, '回调处理失败: ' + e.message, 500);
+  }
+
+  // 模拟配送流程
+  if (order.group_buy_id) {
+    const gb = db.prepare(`SELECT status FROM group_buy WHERE id = ?`).get(order.group_buy_id);
+    if (gb && gb.status === 2) {
+      simulateDeliveryFlow(order.id);
+    }
+  } else {
+    simulateDeliveryFlow(order.id);
+  }
+
+  return success(res, { orderNo, paySuccess: true }, '支付回调处理成功');
 });
 
 module.exports = router;

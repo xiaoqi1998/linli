@@ -173,6 +173,70 @@ router.get('/nearby-warehouses', (req, res) => {
 });
 
 /**
+ * GET /api/v1/products/ip-locate
+ * IP 定位: 通过客户端 IP 获取大致经纬度, 用于 HTTP 非安全上下文下 Geolocation 不可用时的降级
+ * 使用免费的 ip-api.com (支持HTTP, 无需key, 45次/分钟免费)
+ */
+const http = require('http');
+router.get('/ip-locate', (req, res) => {
+  // 从请求头中获取真实 IP (反向代理场景下使用 X-Forwarded-For)
+  let clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.socket.remoteAddress || '';
+  if (clientIp.includes(',')) clientIp = clientIp.split(',')[0].trim();
+  if (clientIp.startsWith('::ffff:')) clientIp = clientIp.slice(7);
+
+  // 判断是否为私有/内部IP (Docker NAT 会产生 172.x/10.x/192.168.x)
+  function isPrivateIP(ip) {
+    if (!ip || ip === '127.0.0.1' || ip === '::1' || ip === 'localhost') return true;
+    const parts = ip.split('.');
+    if (parts.length !== 4) return true;
+    const first = parseInt(parts[0]);
+    const second = parseInt(parts[1]);
+    if (first === 10) return true;
+    if (first === 172 && second >= 16 && second <= 31) return true;
+    if (first === 192 && second === 168) return true;
+    if (first === 127) return true;
+    return false;
+  }
+
+  // 本地/私有IP: 不指定IP调用ip-api, 会使用服务器出口IP(大致定位到服务器所在区域)
+  // 有真实公网IP: 指定该IP查询
+  const useServerIP = isPrivateIP(clientIp);
+  const url = useServerIP
+    ? 'http://ip-api.com/json/?fields=status,message,lat,lon,city,regionName,country,query'
+    : `http://ip-api.com/json/${encodeURIComponent(clientIp)}?fields=status,message,lat,lon,city,regionName,country,query`;
+
+  const reqTimeout = setTimeout(() => {
+    success(res, { latitude: 22.5431, longitude: 113.9465, city: '深圳', source: 'default' });
+  }, 3000);
+
+  http.get(url, (apiRes) => {
+    let data = '';
+    apiRes.on('data', (chunk) => (data += chunk));
+    apiRes.on('end', () => {
+      clearTimeout(reqTimeout);
+      try {
+        const json = JSON.parse(data);
+        if (json.status === 'success' && json.lat && json.lon) {
+          return success(res, {
+            latitude: json.lat,
+            longitude: json.lon,
+            city: json.city || json.regionName || '',
+            source: 'ip',
+          });
+        }
+        success(res, { latitude: 22.5431, longitude: 113.9465, city: '深圳', source: 'default' });
+      } catch (e) {
+        clearTimeout(reqTimeout);
+        success(res, { latitude: 22.5431, longitude: 113.9465, city: '深圳', source: 'default' });
+      }
+    });
+  }).on('error', () => {
+    clearTimeout(reqTimeout);
+    success(res, { latitude: 22.5431, longitude: 113.9465, city: '深圳', source: 'default' });
+  });
+});
+
+/**
  * GET /api/v1/products
  * 商品列表 (分页, 按社区和分类筛选)
  * Query: page, pageSize, communityId, categoryId, sort
@@ -411,6 +475,144 @@ router.get('/:id', (req, res) => {
     lockedStock: inv ? inv.locked_stock : 0,
     warningThreshold: inv ? inv.warning_threshold : 20,
     inStock: inv ? inv.available_stock > 0 : false,
+  });
+});
+
+/**
+ * GET /api/v1/products/search/suggest
+ * 搜索建议 (按商品名模糊匹配)
+ * Query: q
+ */
+router.get('/search/suggest', (req, res) => {
+  const q = req.query.q || '';
+  if (!q.trim()) {
+    return success(res, { list: [] });
+  }
+
+  const likeKeyword = `%${q}%`;
+  const list = db.prepare(`
+    SELECT id, name, sale_price FROM sku
+    WHERE status = 1 AND name LIKE ?
+    ORDER BY sales_count DESC
+    LIMIT 10
+  `).all(likeKeyword);
+
+  return success(res, {
+    list: list.map(s => ({ id: s.id, name: s.name, salePrice: s.sale_price })),
+  });
+});
+
+/**
+ * GET /api/v1/products/:id/reviews
+ * 商品评价列表 (同 GET /reviews?skuId=X, 作为子路由)
+ * Query: page, pageSize
+ */
+router.get('/:id/reviews', (req, res) => {
+  const skuId = parseInt(req.params.id);
+  const page = parseInt(req.query.page) || 1;
+  const pageSize = parseInt(req.query.pageSize) || 10;
+  const offset = (page - 1) * pageSize;
+
+  const { total } = db.prepare(`
+    SELECT COUNT(*) as total FROM product_review
+    WHERE sku_id = ? AND status = 1
+  `).get(skuId);
+
+  const list = db.prepare(`
+    SELECT pr.id, pr.sku_id, pr.order_id, pr.user_id, pr.rating,
+           pr.content, pr.images, pr.is_anonymous, pr.leader_reply,
+           pr.leader_reply_at, pr.created_at,
+           u.nick_name, u.avatar_url
+    FROM product_review pr
+    LEFT JOIN user u ON u.id = pr.user_id
+    WHERE pr.sku_id = ? AND pr.status = 1
+    ORDER BY pr.created_at DESC
+    LIMIT ? OFFSET ?
+  `).all(skuId, pageSize, offset);
+
+  const summary = db.prepare(`
+    SELECT AVG(rating) as avg_rating, COUNT(*) as total_count
+    FROM product_review WHERE sku_id = ? AND status = 1
+  `).get(skuId);
+
+  return success(res, {
+    list: list.map(r => {
+      let images = [];
+      try { images = JSON.parse(r.images || '[]'); } catch (e) { images = []; }
+      return {
+        id: r.id,
+        skuId: r.sku_id,
+        orderId: r.order_id,
+        userId: r.is_anonymous ? null : r.user_id,
+        rating: r.rating,
+        content: r.content,
+        images,
+        isAnonymous: !!r.is_anonymous,
+        nickName: r.is_anonymous ? '匿名用户' : (r.nick_name || ('邻居' + r.user_id)),
+        avatarUrl: r.is_anonymous ? '' : (r.avatar_url || ''),
+        leaderReply: r.leader_reply,
+        leaderReplyAt: r.leader_reply_at,
+        createdAt: r.created_at,
+      };
+    }),
+    summary: {
+      avgRating: summary.avg_rating ? Math.round(summary.avg_rating * 10) / 10 : 0,
+      totalCount: summary.total_count || 0,
+    },
+    total,
+    page,
+    pageSize,
+    hasMore: page * pageSize < total,
+  });
+});
+
+/**
+ * GET /api/v1/products/:id/related
+ * 相关商品 (买过的人还买了)
+ * 查询: 同一订单中出现过该 SKU 的其它 SKU
+ */
+router.get('/:id/related', (req, res) => {
+  const skuId = parseInt(req.params.id);
+
+  // 找到与该 SKU 同单的其它 SKU
+  const relatedSkuIds = db.prepare(`
+    SELECT DISTINCT oi2.sku_id FROM order_item oi1
+    JOIN order_item oi2 ON oi2.order_id = oi1.order_id
+    WHERE oi1.sku_id = ? AND oi2.sku_id != ?
+    LIMIT 5
+  `).all(skuId, skuId);
+
+  if (relatedSkuIds.length === 0) {
+    return success(res, { list: [] });
+  }
+
+  const ids = relatedSkuIds.map(r => r.sku_id);
+  const placeholders = ids.map(() => '?').join(',');
+
+  const list = db.prepare(`
+    SELECT s.id, s.name, s.subtitle, s.main_image, s.unit,
+           s.market_price, s.sale_price, s.sales_count, s.origin,
+           s.category_id, c.name as category_name
+    FROM sku s
+    INNER JOIN category c ON c.id = s.category_id
+    WHERE s.id IN (${placeholders}) AND s.status = 1
+    ORDER BY s.sales_count DESC
+  `).all(...ids);
+
+  return success(res, {
+    list: list.map(s => ({
+      id: s.id,
+      name: s.name,
+      subtitle: s.subtitle,
+      mainImage: s.main_image,
+      unit: s.unit,
+      marketPrice: s.market_price,
+      salePrice: s.sale_price,
+      salesCount: s.sales_count,
+      origin: s.origin,
+      categoryId: s.category_id,
+      categoryName: s.category_name,
+    })),
   });
 });
 

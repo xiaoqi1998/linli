@@ -101,9 +101,42 @@ router.post('/login', (req, res) => {
 
 /**
  * POST /api/v1/auth/login-guest
- * Demo 快速体验登录 (免注册, 直接以 userId=1 的演示账号登录)
+ * Demo 快速体验登录 (免注册)
+ * Body: { role?: 'user' | 'rider' | 'leader' }
  */
 router.post('/login-guest', (req, res) => {
+  const { role } = req.body;
+
+  if (role === 'rider') {
+    const rider = db.prepare('SELECT * FROM rider WHERE status = 1 ORDER BY id LIMIT 1').get();
+    if (!rider) {
+      return error(res, '演示骑手不存在，请先运行 seed', 404);
+    }
+    const token = generateToken(rider.id, 'rider');
+    return success(res, {
+      token,
+      riderId: rider.id,
+      name: rider.name,
+      phone: rider.phone,
+      role: 'rider',
+    }, '体验登录成功');
+  }
+
+  if (role === 'leader') {
+    const leader = db.prepare('SELECT * FROM leader WHERE status = 1 ORDER BY id LIMIT 1').get();
+    if (!leader) {
+      return error(res, '演示团长不存在，请先运行 seed', 404);
+    }
+    const token = generateToken(leader.id, 'leader');
+    return success(res, {
+      token,
+      leaderId: leader.id,
+      name: leader.name,
+      phone: leader.phone,
+      role: 'leader',
+    }, '体验登录成功');
+  }
+
   const userId = 1;
   const user = db.prepare('SELECT id, nick_name, avatar_url, phone, member_level, points FROM user WHERE id = ?').get(userId);
 
@@ -123,7 +156,49 @@ router.post('/login-guest', (req, res) => {
     phone: user.phone,
     memberLevel: user.member_level,
     points: user.points,
+    role: 'user',
   }, '体验登录成功');
+});
+
+/**
+ * POST /api/v1/auth/admin-login
+ * 管理后台登录 (独立账号体系)
+ * Body: { username, password }
+ */
+router.post('/admin-login', (req, res) => {
+  const { username, password } = req.body;
+
+  if (!username || !password) {
+    return error(res, '用户名和密码不能为空', 400);
+  }
+
+  const admin = db.prepare(`
+    SELECT a.*, r.name as role_name, r.permissions
+    FROM admin_user a
+    LEFT JOIN admin_role r ON r.id = a.role_id
+    WHERE a.username = ? AND a.status = 1
+  `).get(username);
+
+  if (!admin) {
+    return error(res, '用户名不存在或已禁用', 404);
+  }
+
+  if (!bcrypt.compareSync(password, admin.password)) {
+    return error(res, '用户名或密码错误', 401);
+  }
+
+  const { generateAdminToken } = require('../middleware/auth');
+  const token = generateAdminToken(admin.id);
+
+  return success(res, {
+    token,
+    adminId: admin.id,
+    username: admin.username,
+    realName: admin.real_name,
+    roleId: admin.role_id,
+    roleName: admin.role_name || '管理员',
+    permissions: JSON.parse(admin.permissions || '[]'),
+  }, '登录成功');
 });
 
 module.exports = router;

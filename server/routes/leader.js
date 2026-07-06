@@ -4,7 +4,7 @@ const db = require('../db');
 const { success, error, now, generateWithdrawNo } = require('../helpers');
 const authMiddleware = require('../middleware/auth');
 const { createMessage } = require('./messages');
-const { settleCommissionForOrder } = require('../scheduler');
+const { settleCommissionForOrder, processOrderRefund } = require('../scheduler');
 
 router.use(authMiddleware);
 
@@ -580,6 +580,13 @@ router.post('/withdraw', (req, res) => {
     return error(res, '可提现佣金不足', 400);
   }
 
+  // 每日提现次数限制: 最多 3 次
+  const today = new Date().toISOString().substring(0, 10);
+  const todayCount = db.prepare(`SELECT COUNT(*) as cnt FROM leader_withdraw WHERE leader_id = ? AND DATE(created_at) = ?`).get(leader.id, today);
+  if (todayCount.cnt >= 3) {
+    return error(res, '今日提现次数已达上限 (3 次)', 400);
+  }
+
   const withdrawNo = generateWithdrawNo();
   const nowStr = now();
 
@@ -658,6 +665,386 @@ router.get('/messages', (req, res) => {
     })),
     unread,
   });
+});
+
+/* ==========================================================================
+   订单详情
+   ========================================================================== */
+
+/**
+ * GET /api/v1/leader/orders/:id
+ * 团长查看订单详情 (含商品行 + 收货地址)
+ */
+router.get('/orders/:id', (req, res) => {
+  const leader = getLeader(req.userId);
+  if (!leader) {
+    return error(res, '您不是团长', 403);
+  }
+
+  const orderId = parseInt(req.params.id);
+  const order = db.prepare(`SELECT * FROM \`order\` WHERE id = ? AND leader_id = ?`).get(orderId, leader.id);
+  if (!order) {
+    return error(res, '订单不存在', 404);
+  }
+
+  const items = db.prepare(`SELECT * FROM order_item WHERE order_id = ?`).all(orderId);
+  const address = order.address_id
+    ? db.prepare(`SELECT * FROM user_address WHERE id = ?`).get(order.address_id)
+    : null;
+
+  return success(res, {
+    ...order,
+    items,
+    address,
+  });
+});
+
+/* ==========================================================================
+   提现记录 (按 /withdraw/history 命名)
+   ========================================================================== */
+
+/**
+ * GET /api/v1/leader/withdraw/history
+ * 团长提现记录
+ */
+router.get('/withdraw/history', (req, res) => {
+  const leader = getLeader(req.userId);
+  if (!leader) {
+    return success(res, { list: [] });
+  }
+
+  const list = db.prepare(`SELECT * FROM leader_withdraw WHERE leader_id = ? ORDER BY created_at DESC LIMIT 50`).all(leader.id);
+
+  return success(res, {
+    list: list.map(w => ({
+      id: w.id,
+      withdrawNo: w.withdraw_no,
+      amount: w.amount,
+      status: w.status,
+      statusText: { 0: '处理中', 1: '已到账', 2: '已拒绝' }[w.status] || '未知',
+      rejectReason: w.reject_reason,
+      createdAt: w.created_at,
+    })),
+    withdrawable: leader.withdrawable_commission,
+  });
+});
+
+/* ==========================================================================
+   客户管理
+   ========================================================================== */
+
+/**
+ * GET /api/v1/leader/customers
+ * 团长本社区下单客户列表
+ */
+router.get('/customers', (req, res) => {
+  const leader = getLeader(req.userId);
+  if (!leader) {
+    return success(res, { list: [] });
+  }
+
+  const customers = db.prepare(`
+    SELECT u.id, u.nick_name, u.avatar_url, u.phone, u.member_level,
+           COALESCE(SUM(o.pay_amount), 0) as total_consume,
+           COUNT(o.id) as order_count,
+           MAX(o.created_at) as last_order_time
+    FROM \`order\` o
+    LEFT JOIN user u ON u.id = o.user_id
+    WHERE o.community_id = ? AND o.pay_status = 1
+    GROUP BY u.id
+    ORDER BY total_consume DESC
+  `).all(leader.community_id);
+
+  const tagStmt = db.prepare(`SELECT tag FROM leader_customer_tag WHERE leader_id = ? AND user_id = ?`);
+  const result = customers.map(c => {
+    const tags = tagStmt.all(leader.id, c.id).map(t => t.tag);
+    return {
+      userId: c.id,
+      nickName: c.nick_name,
+      avatar: c.avatar_url,
+      phone: c.phone,
+      memberLevel: c.member_level,
+      totalConsume: Number(c.total_consume).toFixed(2),
+      orderCount: c.order_count,
+      lastOrderTime: c.last_order_time,
+      tags,
+    };
+  });
+
+  return success(res, { list: result, total: result.length });
+});
+
+/**
+ * GET /api/v1/leader/customers/segments
+ * 团长客户分群 (高价值 / 活跃 / 沉睡)
+ * high_value: 消费额排名前 20%
+ * active: 近 7 天内有下单
+ * sleeping: 30 天以上未下单
+ */
+router.get('/customers/segments', (req, res) => {
+  const leader = getLeader(req.userId);
+  if (!leader) {
+    return success(res, {
+      highValue: { count: 0, list: [] },
+      active: { count: 0, list: [] },
+      sleeping: { count: 0, list: [] },
+      total: 0,
+    });
+  }
+
+  const customers = db.prepare(`
+    SELECT u.id, u.nick_name, u.avatar_url, u.phone,
+           COALESCE(SUM(o.pay_amount), 0) as total_consume,
+           COUNT(o.id) as order_count,
+           MAX(o.created_at) as last_order_time
+    FROM \`order\` o
+    LEFT JOIN user u ON u.id = o.user_id
+    WHERE o.community_id = ? AND o.pay_status = 1
+    GROUP BY u.id
+  `).all(leader.community_id);
+
+  // 高价值: 消费额排名前 20%
+  const sorted = [...customers].sort((a, b) => Number(b.total_consume) - Number(a.total_consume));
+  const highCount = customers.length === 0 ? 0 : Math.max(1, Math.ceil(sorted.length * 0.2));
+  const highValueList = sorted.slice(0, highCount);
+
+  const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString().substring(0, 19);
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString().substring(0, 19);
+
+  const activeList = [];
+  const sleepingList = [];
+  for (const c of customers) {
+    const last = c.last_order_time || '';
+    if (last >= sevenDaysAgo) {
+      activeList.push(c);
+    }
+    if (!last || last < thirtyDaysAgo) {
+      sleepingList.push(c);
+    }
+  }
+
+  const map = (c) => ({
+    userId: c.id,
+    nickName: c.nick_name,
+    avatar: c.avatar_url,
+    phone: c.phone,
+    totalConsume: Number(c.total_consume).toFixed(2),
+    orderCount: c.order_count,
+    lastOrderTime: c.last_order_time,
+  });
+
+  return success(res, {
+    highValue: { count: highValueList.length, list: highValueList.map(map) },
+    active: { count: activeList.length, list: activeList.map(map) },
+    sleeping: { count: sleepingList.length, list: sleepingList.map(map) },
+    total: customers.length,
+  });
+});
+
+/**
+ * POST /api/v1/leader/customers/:userId/tag
+ * 团长为客户添加标签
+ * Body: { tag }
+ */
+router.post('/customers/:userId/tag', (req, res) => {
+  const leader = getLeader(req.userId);
+  if (!leader) {
+    return error(res, '您不是团长', 403);
+  }
+
+  const userId = parseInt(req.params.userId);
+  const { tag } = req.body;
+  if (!tag || !String(tag).trim()) {
+    return error(res, '标签不能为空', 400);
+  }
+  const tagStr = String(tag).trim();
+
+  const user = db.prepare(`SELECT id FROM user WHERE id = ?`).get(userId);
+  if (!user) {
+    return error(res, '用户不存在', 404);
+  }
+
+  try {
+    db.prepare(`INSERT INTO leader_customer_tag (leader_id, user_id, tag, created_at) VALUES (?, ?, ?, ?)`)
+      .run(leader.id, userId, tagStr, now());
+  } catch (e) {
+    // UNIQUE(leader_id, user_id, tag) 冲突说明已存在该标签
+    return error(res, '该标签已存在', 400);
+  }
+
+  return success(res, { userId, tag: tagStr }, '标签添加成功');
+});
+
+/**
+ * DELETE /api/v1/leader/customers/:userId/tag/:tag
+ * 团长删除客户标签
+ */
+router.delete('/customers/:userId/tag/:tag', (req, res) => {
+  const leader = getLeader(req.userId);
+  if (!leader) {
+    return error(res, '您不是团长', 403);
+  }
+
+  const userId = parseInt(req.params.userId);
+  const tag = decodeURIComponent(req.params.tag);
+
+  const result = db.prepare(`DELETE FROM leader_customer_tag WHERE leader_id = ? AND user_id = ? AND tag = ?`)
+    .run(leader.id, userId, tag);
+
+  if (result.changes === 0) {
+    return error(res, '标签不存在', 404);
+  }
+
+  return success(res, { userId, tag }, '标签删除成功');
+});
+
+/**
+ * POST /api/v1/leader/customers/:userId/coupon
+ * 团长给客户发优惠券
+ * Body: { couponId }
+ */
+router.post('/customers/:userId/coupon', (req, res) => {
+  const leader = getLeader(req.userId);
+  if (!leader) {
+    return error(res, '您不是团长', 403);
+  }
+
+  const userId = parseInt(req.params.userId);
+  const { couponId } = req.body;
+  if (!couponId) {
+    return error(res, '参数不完整', 400);
+  }
+
+  const coupon = db.prepare(`SELECT * FROM coupon WHERE id = ? AND status = 1`).get(couponId);
+  if (!coupon) {
+    return error(res, '优惠券不存在或已失效', 404);
+  }
+
+  const user = db.prepare(`SELECT id FROM user WHERE id = ?`).get(userId);
+  if (!user) {
+    return error(res, '用户不存在', 404);
+  }
+
+  const nowStr = now();
+  const validStart = coupon.valid_start || nowStr;
+  const validEnd = coupon.valid_end || new Date(Date.now() + 30 * 86400000).toISOString().replace('T', ' ').substring(0, 19);
+
+  db.prepare(`INSERT INTO user_coupon (user_id, coupon_id, status, valid_start, valid_end, created_at) VALUES (?, ?, 0, ?, ?, ?)`)
+    .run(userId, couponId, validStart, validEnd, nowStr);
+
+  createMessage(userId, 'coupon_received', '收到优惠券', `团长赠送您一张优惠券: ${coupon.name || ''}`, null);
+
+  return success(res, { userId, couponId }, '优惠券发送成功');
+});
+
+/* ==========================================================================
+   社群模板消息
+   ========================================================================== */
+
+const TEMPLATE_MESSAGES = [
+  { type: 'morning_new', icon: '🌅', label: '早安上新', template: '早安！今日上新 {商品名}，限时优惠 {价格}，数量有限先到先得~' },
+  { type: 'price_alert', icon: '💥', label: '特价提醒', template: '【特价提醒】{商品名} 今日特价 {特价}，原价 {原价}，速来抢购！' },
+  { type: 'arrival_notice', icon: '📦', label: '到货通知', template: '您订购的商品已到店，请尽快到 {自提点} 提货，提货码 {提货码}。' },
+  { type: 'group_call', icon: '👥', label: '拼团召集', template: '【拼团召集】{商品名} 还差 {人数} 人成团，邀请好友拼单享 {拼团价}！' },
+  { type: 'weekend_benefit', icon: '🎁', label: '周末福利', template: '周末福利来啦！满 {金额} 立减 {优惠}，活动仅限本周末~' },
+  { type: 'weather_care', icon: '🌧️', label: '天气关怀', template: '{天气描述}，注意出行安全。本店 {商品名} 备货充足，可线上下单送货上门。' },
+  { type: 'review_invite', icon: '✨', label: '晒单邀请', template: '晒出您的好物，分享 {商品名} 使用体验，即可领取 {奖励} 奖励~' },
+  { type: 'holiday_greeting', icon: '🎉', label: '节日问候', template: '{节日}快乐！邻里鲜生送上节日专属福利，{优惠描述} 等您来享。' },
+];
+
+/**
+ * GET /api/v1/leader/template-messages
+ * 团长模板消息列表 (8 个预设模板)
+ */
+router.get('/template-messages', (req, res) => {
+  return success(res, { list: TEMPLATE_MESSAGES });
+});
+
+/**
+ * POST /api/v1/leader/template-messages/send
+ * 团长发送模板消息
+ * Body: { templateType, content, shareUrl }
+ */
+router.post('/template-messages/send', (req, res) => {
+  const leader = getLeader(req.userId);
+  if (!leader) {
+    return error(res, '您不是团长', 403);
+  }
+
+  const { templateType, content, shareUrl = '' } = req.body;
+  if (!templateType || !content) {
+    return error(res, '参数不完整', 400);
+  }
+
+  const nowStr = now();
+  const result = db.prepare(`INSERT INTO template_message_log (leader_id, template_type, content, share_url, community_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(leader.id, templateType, content, shareUrl, leader.community_id, nowStr);
+
+  return success(res, {
+    id: result.lastInsertRowid,
+    templateType,
+    content,
+    shareUrl,
+  }, '发送成功');
+});
+
+/**
+ * GET /api/v1/leader/template-messages/history
+ * 团长模板消息发送记录
+ */
+router.get('/template-messages/history', (req, res) => {
+  const leader = getLeader(req.userId);
+  if (!leader) {
+    return success(res, { list: [] });
+  }
+
+  const list = db.prepare(`SELECT * FROM template_message_log WHERE leader_id = ? ORDER BY created_at DESC LIMIT 50`).all(leader.id);
+
+  return success(res, {
+    list: list.map(m => ({
+      id: m.id,
+      templateType: m.template_type,
+      content: m.content,
+      shareUrl: m.share_url,
+      communityId: m.community_id,
+      createdAt: m.created_at,
+    })),
+  });
+});
+
+/* ==========================================================================
+   团长申请
+   ========================================================================== */
+
+/**
+ * POST /api/v1/leader/apply
+ * 用户申请成为团长
+ * Body: { name, phone, communityId, reason }
+ */
+router.post('/apply', (req, res) => {
+  const { name, phone, communityId, reason = '' } = req.body;
+
+  if (!name || !phone || !communityId) {
+    return error(res, '参数不完整', 400);
+  }
+
+  // 校验: 用户是否已是团长
+  const existingLeader = db.prepare(`SELECT id FROM leader WHERE user_id = ?`).get(req.userId);
+  if (existingLeader) {
+    return error(res, '您已是团长，无需重复申请', 400);
+  }
+
+  // 校验: 是否已提交过待审核申请
+  const existingApp = db.prepare(`SELECT id FROM leader_application WHERE user_id = ? AND status = 0`).get(req.userId);
+  if (existingApp) {
+    return error(res, '您已有待审核的申请', 400);
+  }
+
+  const nowStr = now();
+  const result = db.prepare(`INSERT INTO leader_application (user_id, name, phone, community_id, reason, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?)`)
+    .run(req.userId, name, phone, communityId, reason, nowStr, nowStr);
+
+  return success(res, { id: result.lastInsertRowid, status: 0 }, '申请已提交，请耐心等待审核');
 });
 
 module.exports = router;

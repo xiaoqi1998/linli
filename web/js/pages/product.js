@@ -7,6 +7,8 @@ const ProductPage = (function () {
   let selectedSpec = 0;
   let quantity = 1;
   let carouselIdx = 0;
+  let reviewData = null;
+  let relatedData = null;
 
   async function render(id) {
     try {
@@ -28,11 +30,37 @@ const ProductPage = (function () {
     quantity = 1;
     carouselIdx = 0;
 
+    // Fetch reviews and related products via new APIs
+    reviewData = null;
+    relatedData = null;
+    try { reviewData = await API.getProductReviews(id); } catch (e) { reviewData = null; }
+    try { relatedData = await API.getRelatedProducts(id); } catch (e) { relatedData = null; }
+
+    // Check if user has a completed order for this product (can review)
+    let reviewOrderId = null;
+    try {
+      const orders = await API.getOrders();
+      const orderList = Array.isArray(orders) ? orders : (orders && orders.list) || [];
+      const completedOrder = orderList.find(o => o.status === 50 && (o.items || []).some(it => (it.skuId || it.sku_id || it.id) == id));
+      if (completedOrder) reviewOrderId = completedOrder.id;
+    } catch (e) { reviewOrderId = null; }
+    ProductPage._reviewOrderId = reviewOrderId;
+    ProductPage._reviewSkuId = id;
+    ProductPage._reviewProductName = product.name;
+
     const p = product;
     const tags = p.tags || [];
     const specs = p.specs || [{ name: p.spec, price: p.price }];
     const curPrice = specs[selectedSpec] ? specs[selectedSpec].price : p.price;
-    const reviews = p.reviews || [];
+
+    // Merge reviews: prefer API reviewData, fallback to product.reviews
+    const apiReviews = (reviewData && reviewData.list) || [];
+    const apiAverage = reviewData && (reviewData.summary && reviewData.summary.avgRating !== undefined ? reviewData.summary.avgRating : (reviewData.average !== undefined ? reviewData.average : null));
+    const apiTotal = reviewData && (reviewData.summary && reviewData.summary.totalCount !== undefined ? reviewData.summary.totalCount : (reviewData.total !== undefined ? reviewData.total : null));
+    const reviews = apiReviews.length ? apiReviews : (p.reviews || []);
+    const reviewCount = apiTotal !== null ? apiTotal : reviews.length;
+    const reviewAverage = apiAverage !== null ? apiAverage : (reviews.length ? (reviews.reduce((s, r) => s + (r.stars || 0), 0) / reviews.length).toFixed(1) : 0);
+
     const leader = p.leader;
 
     let detailImgs = p.detailImages || p.detail_images || [];
@@ -104,18 +132,34 @@ const ProductPage = (function () {
 
       <!-- Reviews -->
       <div class="pd-section">
-        <div class="section-title" style="margin-bottom:4px;">邻居评价 (${reviews.length})</div>
-        ${reviews.length ? reviews.slice(0, 3).map(r => `
+        <div class="section-title" style="margin-bottom:4px;">邻居评价 (${reviewCount})</div>
+        ${reviewCount > 0 ? `
+          <div style="display:flex;align-items:center;gap:8px;margin:8px 0 12px;">
+            <span style="font-size:28px;color:#ffc107;font-weight:700;">${reviewAverage}</span>
+            <span style="font-size:16px;color:#ffc107;">${'★'.repeat(Math.round(reviewAverage))}${'☆'.repeat(5 - Math.round(reviewAverage))}</span>
+            <span style="font-size:12px;color:var(--color-muted);">共 ${reviewCount} 条评价</span>
+          </div>
+        ` : ''}
+        ${reviews.length ? reviews.slice(0, 3).map(r => {
+          const rName = r.nickName || r.userName || r.user_name || r.name || '匿名用户';
+          const rAvatar = r.avatar || r.avatarUrl || '😊';
+          const rStars = r.rating || r.stars || 5;
+          const rText = r.content || r.text || '';
+          const rDate = r.createdAt || r.created_at || r.date || '';
+          const rImages = r.images || [];
+          return `
           <div class="review-item">
             <div class="review-head">
-              <div class="review-avatar bg-gold">${r.avatar}</div>
-              <span class="review-name">${r.name}</span>
-              <span class="review-stars">${'★'.repeat(r.stars)}${'☆'.repeat(5 - r.stars)}</span>
+              <div class="review-avatar bg-gold">${rAvatar}</div>
+              <span class="review-name">${rName}</span>
+              <span class="review-stars">${'★'.repeat(rStars)}${'☆'.repeat(5 - rStars)}</span>
             </div>
-            <div class="review-text">${r.text}</div>
-            <div class="text-muted fs-12" style="margin-top:4px;">${r.date}</div>
+            <div class="review-text">${rText}</div>
+            ${rImages && rImages.length ? `<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;">${rImages.slice(0, 4).map(img => `<img src="${img}" style="width:60px;height:60px;object-fit:cover;border-radius:6px;" onerror="this.style.display='none'" />`).join('')}</div>` : ''}
+            <div class="text-muted fs-12" style="margin-top:4px;">${rDate}</div>
           </div>
-        `).join('') : '<div class="empty-state" style="padding:30px;"><div class="empty-emoji">📝</div><div class="empty-desc">暂无评价</div></div>'}
+        `}).join('') : '<div class="empty-state" style="padding:30px;"><div class="empty-emoji">📝</div><div class="empty-desc">暂无评价，快来抢沙发吧</div></div>'}
+        ${reviewOrderId ? `<button class="btn btn-outline" style="width:100%;margin-top:12px;padding:10px;" onclick="ProductPage.writeReview()">✍️ 写评价</button>` : ''}
       </div>
 
       <!-- Product Detail -->
@@ -166,6 +210,12 @@ const ProductPage = (function () {
   }
 
   async function getRelated(product) {
+    // Prefer API data from relatedData (fetched in render)
+    if (relatedData && relatedData.list && relatedData.list.length) {
+      // Apply transformProduct so backend salePrice/marketPrice map to price/oldPrice (and emoji/bg inferred)
+      return relatedData.list.map(rp => (API.transformProduct ? API.transformProduct(rp) : rp));
+    }
+    // Fallback: fetch all products and filter
     try {
       const res = await API.getProducts({ pageSize: 100 });
       const all = Array.isArray(res) ? res : (res.list || []);
@@ -273,5 +323,65 @@ const ProductPage = (function () {
     }
   }
 
-  return { render, selectSpec, openSpecSheet, sheetSpec, sheetQty, confirmSpec };
+  /* ---- Write Review ---- */
+  let _selectedReviewStar = 5;
+  function writeReview() {
+    _selectedReviewStar = 5;
+    const productName = ProductPage._reviewProductName || '';
+    App.showSheet('写评价', `
+      <div style="padding:16px;">
+        <div style="font-size:14px;font-weight:600;margin-bottom:12px;">${productName}</div>
+        <div class="form-group">
+          <label class="form-label">评分</label>
+          <div id="review-stars" style="display:flex;gap:8px;font-size:28px;">
+            ${[1, 2, 3, 4, 5].map(i => `<span data-star="${i}" onclick="ProductPage.selectReviewStar(${i})" style="cursor:pointer;color:#ffc107;">★</span>`).join('')}
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">评价内容</label>
+          <textarea class="form-input" id="review-content" placeholder="分享您的使用体验..." rows="4" maxlength="500"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">图片链接（选填，多张用逗号分隔）</label>
+          <input type="text" class="form-input" id="review-images" placeholder="https://..." />
+        </div>
+        <div class="form-group" style="display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="review-anonymous" style="accent-color:var(--color-primary);width:18px;height:18px;" />
+          <label for="review-anonymous" style="margin:0;cursor:pointer;font-size:14px;">匿名评价</label>
+        </div>
+        <button class="btn btn-primary btn-block" onclick="ProductPage.submitProductReview()">提交评价</button>
+      </div>
+    `);
+  }
+
+  function selectReviewStar(star) {
+    _selectedReviewStar = star;
+    document.querySelectorAll('#review-stars span').forEach(el => {
+      const s = parseInt(el.dataset.star);
+      el.style.color = s <= star ? '#ffc107' : '#ddd';
+    });
+  }
+
+  async function submitProductReview() {
+    const skuId = ProductPage._reviewSkuId;
+    const orderId = ProductPage._reviewOrderId;
+    const rating = _selectedReviewStar;
+    const content = document.getElementById('review-content') ? document.getElementById('review-content').value.trim() : '';
+    const imagesRaw = document.getElementById('review-images') ? document.getElementById('review-images').value.trim() : '';
+    const isAnonymous = document.getElementById('review-anonymous') ? document.getElementById('review-anonymous').checked : false;
+
+    if (!content) { App.toast('请输入评价内容'); return; }
+
+    const images = imagesRaw ? imagesRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+    try {
+      await API.submitReview({ skuId, orderId: orderId, rating, content, images, isAnonymous });
+      App.closeSheet();
+      App.toast('评价提交成功');
+      App.render();
+    } catch (e) {
+      App.toast(e.message || '提交失败，请重试');
+    }
+  }
+
+  return { render, selectSpec, openSpecSheet, sheetSpec, sheetQty, confirmSpec, writeReview, selectReviewStar, submitProductReview };
 })();

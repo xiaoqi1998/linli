@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>邻里鲜生 · 运营后台</title>
-  <link rel="stylesheet" href="css/admin.css?v=2">
+  <link rel="stylesheet" href="css/admin.css?v=3">
 </head>
 <body>
   <div id="app">
@@ -35,6 +35,42 @@
         <a class="nav-item" data-page="inventory" onclick="Admin.go('inventory')">
           <span class="nav-icon">📦</span><span>库存管理</span>
         </a>
+        <a class="nav-item" data-page="inventory-warnings" onclick="Admin.go('inventory-warnings')">
+          <span class="nav-icon">⚠️</span><span>库存预警</span>
+        </a>
+        <a class="nav-item" data-page="order-dispatch" onclick="Admin.go('order-dispatch')">
+          <span class="nav-icon">🚚</span><span>订单调度</span>
+        </a>
+        <a class="nav-item" data-page="product-import-export" onclick="Admin.go('product-import-export')">
+          <span class="nav-icon">📋</span><span>商品导入导出</span>
+        </a>
+        <a class="nav-item" data-page="leader-applications" onclick="Admin.go('leader-applications')">
+          <span class="nav-icon">📝</span><span>团长招募</span>
+        </a>
+        <a class="nav-item" data-page="banners" onclick="Admin.go('banners')">
+          <span class="nav-icon">🖼️</span><span>Banner管理</span>
+        </a>
+        <a class="nav-item" data-page="member-rules" onclick="Admin.go('member-rules')">
+          <span class="nav-icon">🎖️</span><span>会员规则</span>
+        </a>
+        <a class="nav-item" data-page="community-sku" onclick="Admin.go('community-sku')">
+          <span class="nav-icon">🏘️</span><span>千区千面</span>
+        </a>
+        <a class="nav-item" data-page="finance" onclick="Admin.go('finance')">
+          <span class="nav-icon">💼</span><span>资金对账</span>
+        </a>
+        <a class="nav-item" data-page="user-reports" onclick="Admin.go('user-reports')">
+          <span class="nav-icon">📈</span><span>用户看板</span>
+        </a>
+        <a class="nav-item" data-page="logs" onclick="Admin.go('logs')">
+          <span class="nav-icon">📜</span><span>操作日志</span>
+        </a>
+        <a class="nav-item" data-page="rbac" onclick="Admin.go('rbac')">
+          <span class="nav-icon">🔐</span><span>权限管理</span>
+        </a>
+        <a class="nav-item" data-page="admin-login" onclick="Admin.go('admin-login')">
+          <span class="nav-icon">🔑</span><span>管理员登录</span>
+        </a>
       </nav>
       <div class="sidebar-footer">
         <a href="/" class="back-link">← 返回用户端</a>
@@ -44,7 +80,7 @@
       <div class="loading">加载中...</div>
     </main>
   </div>
-  <script src="js/admin-api.js?v=2"></script>
-  <script src="js/admin-app.js?v=2"></script>
+  <script src="js/admin-api.js?v=3"></script>
+  <script src="js/admin-app.js?v=3"></script>
 </body>
 </html>

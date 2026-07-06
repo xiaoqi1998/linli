@@ -3,7 +3,7 @@
    ========================================================================== */
 const MemberPage = (function () {
   async function render() {
-    let user, points;
+    let user, points, exchangeOptions, userReviews;
     try {
       user = await API.getProfile();
     } catch (e) {
@@ -14,6 +14,18 @@ const MemberPage = (function () {
     } catch (e) {
       points = { points: user.points || 0, history: [] };
     }
+    try {
+      exchangeOptions = await API.getExchangeOptions();
+    } catch (e) {
+      exchangeOptions = { list: (API.mock.EXCHANGE_OPTIONS || []) };
+    }
+    try {
+      userReviews = await API.getUserReviews();
+    } catch (e) {
+      userReviews = { list: (API.mock.USER_REVIEWS || []) };
+    }
+    const exchangeList = (exchangeOptions && exchangeOptions.list) || [];
+    const myReviewList = (userReviews && userReviews.list) || [];
 
     const levelName = user.memberLevelName || (user.memberLevel >= 3 ? '老街坊' : user.memberLevel >= 2 ? '老熟人' : '新邻居');
     const nextLevel = user.memberLevel < 3 ? (user.memberLevel >= 2 ? '老街坊' : '老熟人') : null;
@@ -65,6 +77,34 @@ const MemberPage = (function () {
             ${user.memberLevel >= 3 ? '<div class="benefit-item"><span class="benefit-icon">🎧</span><span>优先客服</span></div>' : ''}
           </div>
         </div>
+
+        <!-- 每日签到 -->
+        <div class="member-section">
+          <h3>每日签到</h3>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:16px;background:linear-gradient(135deg,#fff8e1,#ffe0b2);border-radius:12px;">
+            <div>
+              <div style="font-size:15px;font-weight:600;" id="check-in-status">今日未签到</div>
+              <div style="font-size:12px;color:var(--color-muted);margin-top:4px;" id="check-in-desc">连续签到赚积分，第7天双倍</div>
+            </div>
+            <button class="btn btn-primary" id="check-in-btn" style="padding:8px 20px;" onclick="MemberPage.checkIn()">签到 +5</button>
+          </div>
+        </div>
+
+        <!-- 积分兑换 -->
+        ${exchangeList.length ? `
+        <div class="member-section">
+          <h3>积分兑换 <span style="font-size:12px;color:var(--color-muted);font-weight:400;">(${user.points || 0}积分可用)</span></h3>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            ${exchangeList.map(o => `
+              <div style="padding:14px;border:1.5px solid var(--color-line);border-radius:12px;text-align:center;cursor:pointer;" onclick="MemberPage.exchange(${o.id}, ${o.pointsCost})">
+                <div style="font-size:32px;margin-bottom:6px;">${o.couponType === 'free_delivery' ? '🚚' : (o.couponType === 'coupon' || o.type === 'coupon' ? '🎫' : '🎁')}</div>
+                <div style="font-size:13px;font-weight:600;">${o.name}</div>
+                <div style="font-size:11px;color:var(--color-muted);margin:2px 0 8px;">${o.name || ''}</div>
+                <div style="display:inline-block;padding:4px 12px;background:var(--color-primary);color:#fff;border-radius:14px;font-size:12px;font-weight:600;">${o.pointsCost}积分</div>
+              </div>
+            `).join('')}
+          </div>
+        </div>` : ''}
     `;
 
     if (points.history && points.history.length) {
@@ -76,6 +116,27 @@ const MemberPage = (function () {
               <div class="points-item">
                 <div class="points-info"><span class="points-desc">${h.desc}</span><span class="points-time">${h.time}</span></div>
                 <span class="points-amount ${h.amount > 0 ? 'plus' : 'minus'}">${h.amount > 0 ? '+' : ''}${h.amount}</span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    if (myReviewList.length) {
+      html += `
+        <div class="member-section">
+          <h3>我的评价</h3>
+          <div class="review-list">
+            ${myReviewList.map(r => `
+              <div class="review-item">
+                <div class="review-head">
+                  <div class="review-avatar ${r.bg || 'bg-veg'}">${r.emoji || '📦'}</div>
+                  <span class="review-name">${r.skuName || ''}</span>
+                  <span class="review-stars">${'★'.repeat(r.rating || r.stars || 5)}${'☆'.repeat(5 - (r.rating || r.stars || 5))}</span>
+                </div>
+                <div class="review-text">${r.content || ''}</div>
+                <div class="text-muted fs-12" style="margin-top:4px;">${r.createdAt || r.date || ''}</div>
               </div>
             `).join('')}
           </div>
@@ -507,5 +568,60 @@ const MemberPage = (function () {
     }
   }
 
-  return { render, renderAddresses, renderAddressEdit, renderCoupons, renderPoints, selectTag, saveAddress, deleteAddress, bindMapPicker, openEditProfile, selectAvatar, saveProfile };
+  /* ---- Check-in ---- */
+  async function checkIn() {
+    const btn = document.getElementById('check-in-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '签到中...'; }
+    try {
+      const result = await API.checkIn();
+      const statusEl = document.getElementById('check-in-status');
+      const descEl = document.getElementById('check-in-desc');
+      if (result && result.pointsEarned !== undefined) {
+        if (statusEl) statusEl.textContent = '今日已签到 ✓';
+        if (descEl) descEl.textContent = '已连续签到 ' + (result.continuousDays || 1) + ' 天，获得 ' + (result.pointsEarned || 5) + ' 积分';
+        if (btn) { btn.textContent = '已签到 ✓'; btn.disabled = true; }
+        App.toast('签到成功，获得 ' + (result.pointsEarned || 5) + ' 积分');
+        // Update points display in stats
+        const statEls = document.querySelectorAll('.stat-num');
+        if (statEls[0] && result.totalPoints !== undefined) statEls[0].textContent = result.totalPoints;
+      } else {
+        // Already checked in today
+        if (statusEl) statusEl.textContent = '今日已签到 ✓';
+        if (descEl) descEl.textContent = '已连续签到 ' + (result.continuousDays || 1) + ' 天';
+        if (btn) { btn.textContent = '已签到 ✓'; btn.disabled = true; }
+        App.toast(result.message || '今日已签到');
+      }
+    } catch (e) {
+      App.toast(e.message || '签到失败，请重试');
+      if (btn) { btn.disabled = false; btn.textContent = '签到 +5'; }
+    }
+  }
+
+  /* ---- Points Exchange ---- */
+  function exchange(optionId, pointsNeeded) {
+    App.showModal({
+      title: '确认兑换',
+      body: '确定要花费 ' + pointsNeeded + ' 积分兑换此商品吗？',
+      cancelText: '取消',
+      confirmText: '确认兑换',
+      onConfirm: async () => {
+        try {
+          const result = await API.exchangePoints(optionId);
+          App.toast('兑换成功！');
+          // Update points display in stats if totalPoints returned
+          if (result && result.totalPoints !== undefined) {
+            const statEls = document.querySelectorAll('.stat-num');
+            if (statEls[0]) statEls[0].textContent = result.totalPoints;
+          }
+          App.render();
+          return true;
+        } catch (e) {
+          App.toast(e.message || '兑换失败，积分不足或库存不足');
+          return false;
+        }
+      },
+    });
+  }
+
+  return { render, renderAddresses, renderAddressEdit, renderCoupons, renderPoints, selectTag, saveAddress, deleteAddress, bindMapPicker, openEditProfile, selectAvatar, saveProfile, checkIn, exchange };
 })();

@@ -21,6 +21,7 @@ COPY server/ ./server/
 COPY web/ ./web/
 COPY admin/ ./admin/
 COPY leader/ ./leader/
+COPY rider/ ./rider/
 
 # 启动脚本 (修复 Windows CRLF 行尾)
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh

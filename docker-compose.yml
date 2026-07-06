@@ -16,6 +16,8 @@ services:
     volumes:
       # 数据库持久化 (容器重启不丢数据)
       - linli-data:/app/server/data
+      # 商品图片持久化 (容器重建不丢图片)
+      - linli-uploads:/app/server/uploads
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
       interval: 30s
@@ -25,4 +27,6 @@ services:
 
 volumes:
   linli-data:
+    driver: local
+  linli-uploads:
     driver: local

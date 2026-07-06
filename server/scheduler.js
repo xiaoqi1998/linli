@@ -69,6 +69,10 @@ function processOrderRefund(order, reason, operator = 'system', refundStatus = 1
 
     // 7. 通知用户
     createMessage(order.user_id, 'refund_approved', '退款已处理', `订单 ${order.order_no} 已退款 ¥${order.pay_amount.toFixed(2)}`, order.id);
+
+    // 8. 记录资金流水 (退款支出)
+    db.prepare(`INSERT INTO finance_record (type, order_id, amount, direction, description, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run('refund', order.id, order.pay_amount, 'out', `订单 ${order.order_no} 退款`, nowStr);
   });
 
   try {
@@ -210,7 +214,7 @@ function settleCommissionForOrder(order) {
     const items = db.prepare(`SELECT * FROM order_item WHERE order_id = ?`).all(order.id);
     let totalCommission = 0;
     for (const item of items) {
-      const itemCommission = parseFloat((item.price * item.quantity * (item.commission_rate || 8) / 100).toFixed(2));
+      const itemCommission = parseFloat((item.price * item.quantity * (item.commission_rate ?? 8) / 100).toFixed(2));
       totalCommission += itemCommission;
     }
 
@@ -346,6 +350,115 @@ function expireCoupons() {
 }
 
 /**
+ * 6. 系统级自动派单 (每 60 秒执行)
+ * 对已支付未派单的订单 (status=20, pay_status=1) 自动分配骑手
+ */
+function autoDispatchOrders() {
+  try {
+    const orders = db.prepare(`
+      SELECT * FROM \`order\` WHERE status = 20 AND pay_status = 1
+    `).all();
+
+    if (orders.length === 0) return;
+
+    const nowStr = now();
+    let dispatched = 0;
+
+    const dispatchTxn = db.transaction(() => {
+      for (const order of orders) {
+        // 二次校验: 防止与团长/骑手手动派单并发冲突
+        const cur = db.prepare(`SELECT status FROM \`order\` WHERE id = ?`).get(order.id);
+        if (!cur || cur.status !== 20) continue;
+
+        // 选择当前订单最少且可用 (current_orders < 3) 的骑手
+        const rider = db.prepare(`
+          SELECT * FROM rider
+          WHERE warehouse_id = ? AND status = 1 AND current_orders < 3
+          ORDER BY current_orders ASC, id ASC LIMIT 1
+        `).get(order.warehouse_id);
+
+        if (!rider) continue; // 暂无可用骑手, 跳过等待下一轮
+
+        db.prepare(`UPDATE \`order\` SET status = 30, rider_id = ?, rider_accept_time = ? WHERE id = ?`)
+          .run(rider.id, nowStr, order.id);
+
+        db.prepare(`INSERT INTO rider_delivery (order_id, rider_id, status, accept_time, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?)`)
+          .run(order.id, rider.id, nowStr, nowStr, nowStr);
+
+        db.prepare(`UPDATE rider SET current_orders = current_orders + 1 WHERE id = ?`).run(rider.id);
+
+        db.prepare(`INSERT INTO order_status_log (order_id, from_status, to_status, operator, remark) VALUES (?, 20, 30, ?, '系统自动派单')`)
+          .run(order.id, 'system');
+
+        createMessage(order.user_id, 'order_dispatching', '订单配送中', `订单 ${order.order_no} 已派单，骑手正在赶来`, order.id);
+
+        dispatched++;
+      }
+    });
+
+    try {
+      dispatchTxn();
+      if (dispatched > 0) {
+        console.log(`[Scheduler] 自动派单 ${dispatched} 个订单`);
+      }
+    } catch (e) {
+      console.error('[Scheduler] autoDispatchOrders error:', e.message);
+    }
+  } catch (e) {
+    console.error('[Scheduler] autoDispatchOrders error:', e.message);
+  }
+}
+
+/**
+ * 7. 库存预警检查 (每 60 秒执行)
+ * 可用库存 ≤ 预警阈值时通知所有管理员, 同一商品 1 小时内不重复通知
+ */
+function checkInventoryWarnings() {
+  try {
+    const nowStr = now();
+    const oneHourAgo = new Date(Date.now() - 3600000).toISOString().replace('T', ' ').substring(0, 19);
+
+    // 查询所有触发预警的库存
+    const warnings = db.prepare(`
+      SELECT i.warehouse_id, i.sku_id, i.available_stock, i.warning_threshold, s.name as sku_name
+      FROM inventory i
+      INNER JOIN sku s ON i.sku_id = s.id
+      WHERE i.available_stock <= i.warning_threshold
+    `).all();
+
+    if (warnings.length === 0) return;
+
+    // 获取所有启用的管理员
+    const admins = db.prepare(`SELECT id FROM admin_user WHERE status = 1`).all();
+    if (admins.length === 0) return;
+
+    let sent = 0;
+    for (const w of warnings) {
+      // 1 小时内已发过该商品预警则跳过
+      const recent = db.prepare(`
+        SELECT id FROM user_message
+        WHERE type = 'inventory_warning' AND content LIKE ? AND created_at > ?
+        LIMIT 1
+      `).get('%' + w.sku_name + '%', oneHourAgo);
+
+      if (recent) continue;
+
+      const content = `库存预警: ${w.sku_name} 仅剩 ${w.available_stock} 件`;
+      for (const admin of admins) {
+        createMessage(admin.id, 'inventory_warning', '库存预警', content, null);
+      }
+      sent++;
+    }
+
+    if (sent > 0) {
+      console.log(`[Scheduler] 发送 ${sent} 条库存预警`);
+    }
+  } catch (e) {
+    console.error('[Scheduler] checkInventoryWarnings error:', e.message);
+  }
+}
+
+/**
  * 启动所有定时任务
  */
 function startScheduler() {
@@ -357,6 +470,8 @@ function startScheduler() {
     autoConfirmOrders();
     cancelExpiredGroupBuys();
     expireCoupons();
+    autoDispatchOrders();
+    checkInventoryWarnings();
   }, 60 * 1000);
 
   // 每 5 分钟结算佣金
@@ -370,6 +485,7 @@ function startScheduler() {
     cancelExpiredGroupBuys();
     expireCoupons();
     settlePendingCommissions();
+    autoDispatchOrders();
 
     // 恢复中断的演示配送流程 (进程重启后 setTimeout 丢失的订单)
     try {
@@ -390,4 +506,6 @@ module.exports = {
   expireCoupons,
   settlePendingCommissions,
   processOrderRefund,
+  autoDispatchOrders,
+  checkInventoryWarnings,
 };

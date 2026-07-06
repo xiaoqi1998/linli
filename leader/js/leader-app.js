@@ -9,6 +9,13 @@ const Leader = (function () {
       const res = await LeaderAPI.loginGuest();
       LeaderAPI.setToken(res.token);
     } catch (e) { console.error(e); }
+    // 若非团长（无法获取工作台数据），则展示申请表单
+    try {
+      await LeaderAPI.getDashboard();
+    } catch (e) {
+      await go('apply');
+      return;
+    }
     await go('dashboard');
   }
 
@@ -25,6 +32,11 @@ const Leader = (function () {
         case 'orders': html = await renderOrders(); break;
         case 'group': html = await renderGroup(); break;
         case 'commission': html = await renderCommission(); break;
+        case 'withdraw': html = await renderWithdraw(); break;
+        case 'refunds': html = await renderRefunds(); break;
+        case 'customers': html = await renderCustomers(); break;
+        case 'marketing': html = await renderMarketing(); break;
+        case 'apply': html = await renderApply(); break;
       }
       main.innerHTML = html;
     } catch (e) {
@@ -313,7 +325,7 @@ const Leader = (function () {
       <div class="withdraw-card">
         <div class="withdraw-label">可提现佣金 (元)</div>
         <div class="withdraw-balance">¥${parseFloat(data.withdrawable || 0).toFixed(2)}</div>
-        <button class="withdraw-btn" onclick="Leader.toast('提现功能开发中')">提现到账户</button>
+        <button class="withdraw-btn" onclick="Leader.go('withdraw')">提现到账户</button>
       </div>
 
       <div class="stat-row">
@@ -342,6 +354,425 @@ const Leader = (function () {
     `;
   }
 
+  /* ---- Withdraw (提现) ---- */
+  async function renderWithdraw() {
+    const comm = await LeaderAPI.getCommission();
+    const history = await LeaderAPI.getWithdrawHistory().catch(() => ({ list: [] }));
+    const withdrawable = parseFloat(comm.withdrawable || 0).toFixed(2);
+    const records = history.list || [];
+    const statusMap = { 0: ['处理中', 'orange'], 1: ['已到账', 'green'], 2: ['已拒绝', 'red'] };
+
+    return `
+      <div class="withdraw-card">
+        <div class="withdraw-label">可提现佣金 (元)</div>
+        <div class="withdraw-balance">¥${withdrawable}</div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">申请提现</div>
+        <div style="margin-bottom:12px;">
+          <label style="font-size:13px;color:var(--text-light);display:block;margin-bottom:6px;">提现金额 (最低10元)</label>
+          <input type="number" id="wd-amount" min="10" step="0.01" style="width:100%;height:44px;border:1.5px solid var(--border);border-radius:8px;padding:0 12px;font-size:16px;" placeholder="请输入提现金额" />
+        </div>
+        <button id="wd-submit" class="btn btn-primary btn-block" onclick="Leader.submitWithdraw('${withdrawable}')">确认提现</button>
+      </div>
+
+      <div class="section">
+        <div class="section-title">提现记录</div>
+        ${records.length ? records.map(r => {
+          const [stext, scls] = statusMap[r.status] || ['未知', 'gray'];
+          return `
+            <div class="comm-item">
+              <div class="comm-info">
+                <div class="comm-order">提现 ¥${parseFloat(r.amount || 0).toFixed(2)}</div>
+                <div class="comm-time">${r.createdAt || r.created_at || ''}</div>
+              </div>
+              <span class="badge badge-${scls}">${stext}</span>
+            </div>
+          `;
+        }).join('') : '<div class="empty-state"><p>暂无提现记录</p></div>'}
+      </div>
+    `;
+  }
+
+  async function submitWithdraw(maxAmount) {
+    const amount = parseFloat(document.getElementById('wd-amount').value);
+    if (!amount || amount < 10) { toast('提现金额不能低于10元'); return; }
+    if (amount > parseFloat(maxAmount)) { toast('提现金额超过可提现额度'); return; }
+    const btn = document.getElementById('wd-submit');
+    btn.disabled = true; btn.textContent = '提交中...';
+    try {
+      await LeaderAPI.requestWithdraw(amount);
+      toast('提现申请已提交');
+      go('withdraw');
+    } catch (e) {
+      toast(e.message || '提现失败');
+      btn.disabled = false; btn.textContent = '确认提现';
+    }
+  }
+
+  /* ---- Refunds (售后处理) ---- */
+  async function renderRefunds() {
+    const data = await LeaderAPI.getRefunds();
+    const refunds = data.list || [];
+
+    return `
+      <div class="section" style="padding:10px;margin-bottom:8px;">
+        <div style="font-size:13px;color:var(--text-secondary);">待处理售后申请 · ${refunds.length} 条</div>
+      </div>
+      ${refunds.length ? refunds.map(r => `
+        <div class="order-card">
+          <div class="order-card-head">
+            <span class="order-no">${r.orderNo || '订单#' + r.orderId}</span>
+            <span class="badge badge-orange">待处理</span>
+          </div>
+          <div style="font-size:13px;margin-bottom:4px;">
+            <span style="color:var(--text-light);">申请人：</span>${r.userName || r.user_name || '用户'}
+          </div>
+          <div style="font-size:13px;margin-bottom:4px;">
+            <span style="color:var(--text-light);">退款金额：</span><strong style="color:var(--danger);">¥${parseFloat(r.amount || 0).toFixed(2)}</strong>
+          </div>
+          <div style="font-size:13px;margin-bottom:4px;">
+            <span style="color:var(--text-light);">申请原因：</span>${r.reason || '无'}
+          </div>
+          <div style="font-size:11px;color:var(--text-light);margin-bottom:10px;">${r.createdAt || r.created_at || ''}</div>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-primary btn-sm" style="flex:1;" onclick="Leader.approveRefund(${r.id})">同意退款</button>
+            <button class="btn btn-outline btn-sm" style="flex:1;" onclick="Leader.showRejectRefund(${r.id})">拒绝</button>
+          </div>
+        </div>
+      `).join('') : '<div class="empty-state"><p>暂无售后申请</p></div>'}
+    `;
+  }
+
+  async function approveRefund(id) {
+    if (!confirm('确认同意该退款申请？')) return;
+    try {
+      await LeaderAPI.approveRefund(id);
+      toast('已同意退款');
+      go('refunds');
+    } catch (e) { toast(e.message || '操作失败'); }
+  }
+
+  function showRejectRefund(id) {
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:flex-end;justify-content:center;';
+    modal.innerHTML = `
+      <div style="background:#fff;width:100%;max-width:430px;border-radius:16px 16px 0 0;padding:20px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+          <h3 style="font-size:18px;font-weight:700;">拒绝退款原因</h3>
+          <span style="font-size:24px;cursor:pointer;" onclick="this.closest('.modal-overlay').remove()">×</span>
+        </div>
+        <textarea id="rj-reason" style="width:100%;height:100px;border:1.5px solid var(--border);border-radius:8px;padding:10px;font-size:14px;" placeholder="请输入拒绝原因"></textarea>
+        <button id="rj-submit" class="btn btn-primary btn-block" style="margin-top:12px;" onclick="Leader.submitReject(${id})">确认拒绝</button>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+  }
+
+  async function submitReject(id) {
+    const reason = document.getElementById('rj-reason').value.trim();
+    if (!reason) { toast('请输入拒绝原因'); return; }
+    const btn = document.getElementById('rj-submit');
+    btn.disabled = true; btn.textContent = '提交中...';
+    try {
+      await LeaderAPI.rejectRefund(id, reason);
+      document.querySelector('.modal-overlay')?.remove();
+      toast('已拒绝退款');
+      go('refunds');
+    } catch (e) {
+      toast(e.message || '操作失败');
+      btn.disabled = false; btn.textContent = '确认拒绝';
+    }
+  }
+
+  /* ---- Customers (客户管理) ---- */
+  async function renderCustomers() {
+    const custData = await LeaderAPI.getCustomers();
+    const segData = await LeaderAPI.getCustomerSegments().catch(() => ({}));
+    const customers = custData.list || [];
+    const seg = segData || {};
+
+    return `
+      <div class="stat-row">
+        <div class="stat-card">
+          <span class="stat-label">高价值客户</span>
+          <span class="stat-value green">${seg.highValue?.count || seg.highValue || 0}</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">活跃客户</span>
+          <span class="stat-value">${seg.active?.count || seg.active || 0}</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">沉睡客户</span>
+          <span class="stat-value orange">${seg.sleeping?.count || seg.dormant || 0}</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">客户总数</span>
+          <span class="stat-value">${customers.length}</span>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">客户列表</div>
+        ${customers.length ? customers.map(c => {
+          const uid = c.userId || c.id;
+          const name = c.nickName || c.nickname || c.name || '用户';
+          const tags = c.tags || [];
+          return `
+            <div style="display:flex;gap:10px;padding:12px 0;border-bottom:1px solid var(--border);">
+              <div style="width:40px;height:40px;border-radius:50%;background:var(--primary-light);display:flex;align-items:center;justify-content:center;font-size:18px;color:var(--primary-dark);font-weight:600;">${name.charAt(0)}</div>
+              <div style="flex:1;">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <span style="font-size:14px;font-weight:600;">${name}</span>
+                  <span style="font-size:12px;color:var(--text-light);">下单 ${c.orderCount || 0} 次</span>
+                </div>
+                <div style="font-size:12px;color:var(--text-light);margin-top:2px;">累计消费 ¥${parseFloat(c.totalConsume || 0).toFixed(2)}</div>
+                <div style="font-size:11px;color:var(--text-light);margin-top:2px;">最近下单 ${c.lastOrderTime || '无'}</div>
+                ${tags.length ? `<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;">${tags.map(t => `<span class="badge badge-blue" style="cursor:pointer;" onclick="Leader.removeCustomerTag(${uid}, '${String(t).replace(/'/g, "\\'")}')">${t} ×</span>`).join('')}</div>` : ''}
+                <div style="display:flex;gap:6px;margin-top:8px;">
+                  <button class="btn btn-outline btn-sm" onclick="Leader.showAddTag(${uid})">添加标签</button>
+                  <button class="btn btn-primary btn-sm" onclick="Leader.showSendCoupon(${uid})">发优惠券</button>
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('') : '<div class="empty-state"><p>暂无客户</p></div>'}
+      </div>
+    `;
+  }
+
+  function showAddTag(userId) {
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:flex-end;justify-content:center;';
+    modal.innerHTML = `
+      <div style="background:#fff;width:100%;max-width:430px;border-radius:16px 16px 0 0;padding:20px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+          <h3 style="font-size:18px;font-weight:700;">添加客户标签</h3>
+          <span style="font-size:24px;cursor:pointer;" onclick="this.closest('.modal-overlay').remove()">×</span>
+        </div>
+        <input type="text" id="tag-input" style="width:100%;height:44px;border:1.5px solid var(--border);border-radius:8px;padding:0 12px;font-size:14px;" placeholder="如：高价值、爱吃水果、宝妈" />
+        <button id="tag-submit" class="btn btn-primary btn-block" style="margin-top:12px;" onclick="Leader.submitAddTag(${userId})">确认添加</button>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+  }
+
+  async function submitAddTag(userId) {
+    const tag = document.getElementById('tag-input').value.trim();
+    if (!tag) { toast('请输入标签'); return; }
+    const btn = document.getElementById('tag-submit');
+    btn.disabled = true; btn.textContent = '提交中...';
+    try {
+      await LeaderAPI.addCustomerTag(userId, tag);
+      document.querySelector('.modal-overlay')?.remove();
+      toast('标签已添加');
+      go('customers');
+    } catch (e) {
+      toast(e.message || '操作失败');
+      btn.disabled = false; btn.textContent = '确认添加';
+    }
+  }
+
+  async function removeCustomerTag(userId, tag) {
+    if (!confirm(`移除标签「${tag}」？`)) return;
+    try {
+      await LeaderAPI.removeCustomerTag(userId, tag);
+      toast('标签已移除');
+      go('customers');
+    } catch (e) { toast(e.message || '操作失败'); }
+  }
+
+  function showSendCoupon(userId) {
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:flex-end;justify-content:center;';
+    modal.innerHTML = `
+      <div style="background:#fff;width:100%;max-width:430px;border-radius:16px 16px 0 0;padding:20px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+          <h3 style="font-size:18px;font-weight:700;">发送优惠券</h3>
+          <span style="font-size:24px;cursor:pointer;" onclick="this.closest('.modal-overlay').remove()">×</span>
+        </div>
+        <div style="margin-bottom:12px;font-size:13px;color:var(--text-light);">选择优惠券发放给该客户</div>
+        <select id="coupon-select" style="width:100%;height:44px;border:1.5px solid var(--border);border-radius:8px;padding:0 12px;font-size:14px;background:#fff;">
+          <option value="1">满50减5 优惠券</option>
+          <option value="2">满100减15 优惠券</option>
+          <option value="3">新人立减10 优惠券</option>
+          <option value="4">免费配送券</option>
+        </select>
+        <button id="coupon-submit" class="btn btn-primary btn-block" style="margin-top:12px;" onclick="Leader.submitSendCoupon(${userId})">发送优惠券</button>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+  }
+
+  async function submitSendCoupon(userId) {
+    const couponId = parseInt(document.getElementById('coupon-select').value);
+    const btn = document.getElementById('coupon-submit');
+    btn.disabled = true; btn.textContent = '发送中...';
+    try {
+      await LeaderAPI.sendCustomerCoupon(userId, couponId);
+      document.querySelector('.modal-overlay')?.remove();
+      toast('优惠券已发送');
+    } catch (e) {
+      toast(e.message || '发送失败');
+      btn.disabled = false; btn.textContent = '发送优惠券';
+    }
+  }
+
+  /* ---- Marketing (社群营销 / 模板消息) ---- */
+  const TEMPLATES = [
+    { id: 'morning_new', icon: '🌅', label: '早安上新', text: '早安邻居！今日新鲜到货，戳卡片下单' },
+    { id: 'sale_alert', icon: '🔥', label: '特价提醒', text: 'XX商品限时特价，手慢无' },
+    { id: 'group_call', icon: '🤝', label: '拼团召集', text: '还差X人成团，快来参团' },
+    { id: 'arrive_notice', icon: '📦', label: '到货通知', text: '您订阅的XX已到货，请到提货点取件' },
+    { id: 'weather_care', icon: '❄️', label: '天气关怀', text: '降温了，火锅食材备起来' },
+    { id: 'share_invite', icon: '📸', label: '晒单邀请', text: '收到货的邻居来晒个单吧' },
+    { id: 'repurchase', icon: '🔁', label: '复购提醒', text: '您常买的XX该补货啦' },
+    { id: 'thanks', icon: '💝', label: '感谢回访', text: '感谢您的支持，送您专属优惠券' },
+  ];
+  let marketingTemplates = TEMPLATES;
+
+  async function renderMarketing() {
+    const histData = await LeaderAPI.getTemplateMessageHistory().catch(() => ({ list: [] }));
+    const history = histData.list || [];
+
+    try {
+      const res = await LeaderAPI.getTemplateMessages();
+      const list = Array.isArray(res) ? res : (res.list || []);
+      if (list.length) marketingTemplates = list;
+    } catch (e) {
+      // fall back to hardcoded TEMPLATES
+    }
+
+    return `
+      <div class="section">
+        <div class="section-title">营销模板 (点击编辑发送)</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+          ${marketingTemplates.map((t, i) => `
+            <div style="padding:12px;background:var(--bg);border-radius:10px;cursor:pointer;" onclick="Leader.showTemplateEditor(${i})">
+              <div style="font-size:24px;">${t.icon || '📝'}</div>
+              <div style="font-size:13px;font-weight:600;margin-top:4px;">${t.label || t.name || t.title || '模板'}</div>
+              <div style="font-size:11px;color:var(--text-light);margin-top:2px;">点击编辑发送</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">发送历史</div>
+        ${history.length ? history.map(h => `
+          <div class="comm-item">
+            <div class="comm-info">
+              <div class="comm-order">${h.templateType || h.template_name || '营销消息'}</div>
+              <div class="comm-time">${h.createdAt || h.created_at || ''}</div>
+            </div>
+            <span style="font-size:12px;color:var(--text-light);">${h.content || ''}</span>
+          </div>
+        `).join('') : '<div class="empty-state"><p>暂无发送记录</p></div>'}
+      </div>
+    `;
+  }
+
+  function showTemplateEditor(idx) {
+    const t = marketingTemplates[idx];
+    const tId = t.id || t.templateType;
+    const tLabel = t.label || t.name || t.title || '营销消息';
+    const tIcon = t.icon || '📝';
+    const tText = t.text || t.content || '';
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:flex-end;justify-content:center;';
+    modal.innerHTML = `
+      <div style="background:#fff;width:100%;max-width:430px;border-radius:16px 16px 0 0;padding:20px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+          <h3 style="font-size:18px;font-weight:700;">${tIcon} ${tLabel}</h3>
+          <span style="font-size:24px;cursor:pointer;" onclick="this.closest('.modal-overlay').remove()">×</span>
+        </div>
+        <div style="margin-bottom:12px;">
+          <label style="font-size:13px;color:var(--text-light);display:block;margin-bottom:6px;">消息内容</label>
+          <textarea id="tpl-content" style="width:100%;height:100px;border:1.5px solid var(--border);border-radius:8px;padding:10px;font-size:14px;">${tText}</textarea>
+        </div>
+        <button id="tpl-submit" class="btn btn-primary btn-block" onclick="Leader.sendTemplate('${tId}', '${tLabel}')">发送到社群</button>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+  }
+
+  async function sendTemplate(templateId, templateName) {
+    const content = document.getElementById('tpl-content').value.trim();
+    if (!content) { toast('请输入消息内容'); return; }
+    const btn = document.getElementById('tpl-submit');
+    btn.disabled = true; btn.textContent = '发送中...';
+    try {
+      await LeaderAPI.sendTemplateMessage({ templateType: templateId, content, shareUrl: '' });
+      document.querySelector('.modal-overlay')?.remove();
+      toast('已发送到社群');
+      go('marketing');
+    } catch (e) {
+      toast(e.message || '发送失败');
+      btn.disabled = false; btn.textContent = '发送到社群';
+    }
+  }
+
+  /* ---- Apply Leader (申请成为团长) ---- */
+  async function renderApply() {
+    return `
+      <div class="section">
+        <div class="section-title">申请成为团长</div>
+        <div style="font-size:13px;color:var(--text-light);margin-bottom:14px;line-height:1.6;">填写以下信息申请成为社区团长，审核通过后即可开通工作台。</div>
+        <div style="margin-bottom:12px;">
+          <label style="font-size:13px;color:var(--text-light);display:block;margin-bottom:6px;">姓名</label>
+          <input type="text" id="ap-name" style="width:100%;height:44px;border:1.5px solid var(--border);border-radius:8px;padding:0 12px;font-size:14px;" placeholder="请输入您的姓名" />
+        </div>
+        <div style="margin-bottom:12px;">
+          <label style="font-size:13px;color:var(--text-light);display:block;margin-bottom:6px;">手机号</label>
+          <input type="tel" id="ap-phone" style="width:100%;height:44px;border:1.5px solid var(--border);border-radius:8px;padding:0 12px;font-size:14px;" placeholder="请输入手机号" maxlength="11" />
+        </div>
+        <div style="margin-bottom:12px;">
+          <label style="font-size:13px;color:var(--text-light);display:block;margin-bottom:6px;">所在社区</label>
+          <select id="ap-community" style="width:100%;height:44px;border:1.5px solid var(--border);border-radius:8px;padding:0 12px;font-size:14px;background:#fff;">
+            <option value="">请选择社区</option>
+            <option value="1">阳光花园社区</option>
+            <option value="2">翠湖天地社区</option>
+            <option value="3">幸福里社区</option>
+            <option value="4">和平家园社区</option>
+          </select>
+        </div>
+        <div style="margin-bottom:16px;">
+          <label style="font-size:13px;color:var(--text-light);display:block;margin-bottom:6px;">申请理由</label>
+          <textarea id="ap-reason" style="width:100%;height:80px;border:1.5px solid var(--border);border-radius:8px;padding:10px;font-size:14px;" placeholder="请简要描述您的优势和社区资源"></textarea>
+        </div>
+        <button id="ap-submit" class="btn btn-primary btn-block" onclick="Leader.submitApply()">提交申请</button>
+      </div>
+    `;
+  }
+
+  async function submitApply() {
+    const name = document.getElementById('ap-name').value.trim();
+    const phone = document.getElementById('ap-phone').value.trim();
+    const communityId = document.getElementById('ap-community').value;
+    const reason = document.getElementById('ap-reason').value.trim();
+    if (!name || !phone || !communityId) { toast('请填写完整信息'); return; }
+    if (!/^1\d{10}$/.test(phone)) { toast('请输入正确的手机号'); return; }
+    const btn = document.getElementById('ap-submit');
+    btn.disabled = true; btn.textContent = '提交中...';
+    try {
+      await LeaderAPI.applyLeader({ name, phone, communityId: parseInt(communityId), reason });
+      toast('申请已提交，等待审核');
+      go('dashboard');
+    } catch (e) {
+      toast(e.message || '申请失败');
+      btn.disabled = false; btn.textContent = '提交申请';
+    }
+  }
+
   /* ---- Utils ---- */
   function toast(msg) {
     const existing = document.querySelector('.toast');
@@ -361,7 +792,14 @@ const Leader = (function () {
     }
   }
 
-  return { init, go, toast, filterOrders, copyText, showCreateGroup, submitGroup };
+  return {
+    init, go, toast, copyText,
+    filterOrders, showCreateGroup, submitGroup,
+    submitWithdraw, approveRefund, showRejectRefund, submitReject,
+    showAddTag, submitAddTag, removeCustomerTag, showSendCoupon, submitSendCoupon,
+    showTemplateEditor, sendTemplate,
+    submitApply,
+  };
 })();
 
 document.addEventListener('DOMContentLoaded', () => Leader.init());

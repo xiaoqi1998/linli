@@ -174,6 +174,27 @@ const API = (function () {
     id: 1, name: '阳光小区', eta: 30, city: '深圳市南山区', address: '南山区阳光小区',
   };
 
+  const EXCHANGE_OPTIONS = [
+    { id: 1, name: '5元无门槛券', pointsCost: 50, type: 'coupon', couponType: 'coupon', faceValue: 5, minOrderAmount: 0 },
+    { id: 2, name: '10元满减券', pointsCost: 100, type: 'coupon', couponType: 'coupon', faceValue: 10, minOrderAmount: 30 },
+    { id: 3, name: '免配送费券', pointsCost: 30, type: 'coupon', couponType: 'free_delivery', faceValue: 0, minOrderAmount: 0 },
+    { id: 4, name: '鲜鸡蛋6枚', pointsCost: 200, type: 'product', couponType: 'product', faceValue: 0, minOrderAmount: 0 },
+    { id: 5, name: '进口车厘子500g', pointsCost: 500, type: 'product', couponType: 'product', faceValue: 0, minOrderAmount: 0 },
+  ];
+
+  const USER_REVIEWS = [
+    { id: 1, skuId: 101, skuName: '本地小番茄 500g', emoji: '🍅', bg: 'bg-veg', rating: 5, content: '小番茄很甜很新鲜，孩子抢着吃！', images: [], createdAt: '2026-07-02', orderNo: 'O2026070214301' },
+    { id: 2, skuId: 301, skuName: '土鸡蛋 30枚', emoji: '🥚', bg: 'bg-meat', rating: 4, content: '鸡蛋新鲜，个头均匀，包装也很好。', images: [], createdAt: '2026-07-02', orderNo: 'O2026070214301' },
+  ];
+
+  const NOTIFICATION_SETTINGS = {
+    orderStatus: true,
+    groupBuy: true,
+    system: true,
+  };
+
+  let checkInState = { continuousDays: 3, checkedToday: false, pointsEarned: 5 };
+
   // ---- Mock router ----
   function mockHandler(method, path, body) {
     // Auth
@@ -201,6 +222,31 @@ const API = (function () {
     if (path === '/categories') return CATEGORIES;
 
     // Products
+    // Product reviews: /products/{id}/reviews  (must be before the /products/{id} catch-all)
+    if (path.match(/^\/products\/\d+\/reviews$/)) {
+      const id = parseInt(path.split('/')[2]);
+      const list = REVIEWS[id] || [];
+      const total = list.length;
+      const average = total ? Math.round((list.reduce((s, r) => s + (r.stars || 0), 0) / total) * 10) / 10 : 0;
+      return { list, total, average, summary: { avgRating: average, totalCount: total }, page: 1, pageSize: 10, hasMore: false };
+    }
+    // Related products: /products/{id}/related
+    if (path.match(/^\/products\/\d+\/related$/)) {
+      const id = parseInt(path.split('/')[2]);
+      const p = PRODUCTS.find(x => x.id === id);
+      if (!p) return { list: [] };
+      let related = PRODUCTS.filter(x => x.categoryId === p.categoryId && x.id !== id);
+      if (related.length < 4) {
+        related = [...related, ...PRODUCTS.filter(x => x.id !== id && x.categoryId !== p.categoryId)];
+      }
+      return { list: related.slice(0, 6) };
+    }
+    // Search suggest: /products/search/suggest?q=...
+    if (path.startsWith('/products/search/suggest')) {
+      const q = decodeURIComponent((path.split('?q=')[1] || '').split('&')[0] || '');
+      const matches = q ? PRODUCTS.filter(p => p.name.includes(q)).slice(0, 5) : [];
+      return { list: matches.map(p => ({ id: p.id, name: p.name, emoji: p.emoji, bg: p.bg, price: p.price })) };
+    }
     if (path.startsWith('/products/') ) {
       const id = parseInt(path.split('/')[2]);
       const p = PRODUCTS.find(x => x.id === id);
@@ -297,6 +343,52 @@ const API = (function () {
 
     // Points
     if (path === '/user/points') return { points: USER.points, history: [{ desc: '消费获得', amount: 38, time: '2026-07-02' }, { desc: '每日签到', amount: 5, time: '2026-07-03' }, { desc: '首次评价', amount: 10, time: '2026-07-01' }] };
+    if (path.startsWith('/user/points/history')) return { list: [{ desc: '消费获得', amount: 38, time: '2026-07-02' }, { desc: '每日签到', amount: 5, time: '2026-07-03' }, { desc: '首次评价', amount: 10, time: '2026-07-01' }], total: 3, points: USER.points };
+    if (path === '/user/points/exchange-options') return { list: EXCHANGE_OPTIONS, points: USER.points };
+    if (path === '/user/points/exchange' && method === 'POST') {
+      const opt = EXCHANGE_OPTIONS.find(o => o.id === (body && body.optionId));
+      if (!opt) return undefined;
+      USER.points = Math.max(0, (USER.points || 0) - opt.pointsCost);
+      return { totalPoints: USER.points, pointsCost: opt.pointsCost };
+    }
+
+    // Check-in
+    if (path === '/user/check-in' && method === 'POST') {
+      if (checkInState.checkedToday) {
+        return { message: '今日已签到', continuousDays: checkInState.continuousDays, pointsEarned: 0, totalPoints: USER.points, checkedToday: true };
+      }
+      checkInState.checkedToday = true;
+      checkInState.continuousDays = (checkInState.continuousDays || 0) + 1;
+      checkInState.pointsEarned = 5 + Math.min(checkInState.continuousDays, 7);
+      USER.points = (USER.points || 0) + checkInState.pointsEarned;
+      return { continuousDays: checkInState.continuousDays, pointsEarned: checkInState.pointsEarned, totalPoints: USER.points, checkedToday: true };
+    }
+
+    // User community
+    if (path === '/user/community' && method === 'GET') return COMMUNITY;
+    if (path === '/user/community' && method === 'POST') return { ...COMMUNITY, id: body && body.communityId, name: (body && body.communityId === 2) ? '翠海花园' : COMMUNITY.name };
+
+    // Reviews
+    if (path.startsWith('/reviews') && method === 'GET') {
+      const qs = path.split('?')[1] || '';
+      const sp = new URLSearchParams(qs);
+      const skuId = parseInt(sp.get('skuId'));
+      const list = REVIEWS[skuId] || [];
+      return { list, total: list.length, average: list.length ? Math.round((list.reduce((s, r) => s + (r.stars || 0), 0) / list.length) * 10) / 10 : 0 };
+    }
+    if (path === '/reviews' && method === 'POST') {
+      return { success: true, id: Date.now(), ...(body || {}) };
+    }
+
+    // User reviews
+    if (path === '/user/reviews') return { list: USER_REVIEWS };
+
+    // Event tracking (fire-and-forget; normally mock:false, but handle anyway)
+    if (path === '/events/track' && method === 'POST') return { success: true };
+
+    // Notifications settings
+    if (path === '/notifications/settings' && method === 'GET') return NOTIFICATION_SETTINGS;
+    if (path === '/notifications/settings' && method === 'PUT') return { ...NOTIFICATION_SETTINGS, ...(body || {}) };
 
     return undefined;
   }
@@ -576,6 +668,7 @@ const API = (function () {
     // 地图相关
     getCommunities: () => get('/products/communities'),
     locateCommunity: (lat, lng) => get('/products/locate-community?lat=' + lat + '&lng=' + lng),
+    ipLocate: () => get('/products/ip-locate'),
     getRiderLocation: (orderNo) => get('/orders/' + orderNo + '/rider-location'),
     getAddresses: async () => {
       const data = await get('/user/addresses');
@@ -610,7 +703,36 @@ const API = (function () {
       };
     },
 
+    // ---- Check-in ----
+    checkIn: () => post('/user/check-in', {}),
+
+    // ---- Points history & exchange ----
+    getPointsHistory: (page = 1) => get('/user/points/history?page=' + page),
+    getExchangeOptions: () => get('/user/points/exchange-options'),
+    exchangePoints: (optionId) => post('/user/points/exchange', { optionId }),
+
+    // ---- User community (current selection) ----
+    getUserCommunity: () => get('/user/community'),
+    setUserCommunity: (communityId) => post('/user/community', { communityId }),
+
+    // ---- Reviews ----
+    getReviews: (skuId, page = 1) => get('/reviews?skuId=' + skuId + '&page=' + page),
+    submitReview: (data) => post('/reviews', data),
+    getProductReviews: (skuId) => get('/products/' + skuId + '/reviews'),
+    getRelatedProducts: (skuId) => get('/products/' + skuId + '/related'),
+    getUserReviews: () => get('/user/reviews'),
+
+    // ---- Search suggestions ----
+    searchSuggest: (q) => get('/products/search/suggest?q=' + encodeURIComponent(q)),
+
+    // ---- Event tracking (fire-and-forget, never throws, no mock fallback) ----
+    trackEvent: (eventName, properties = {}) => post('/events/track', { eventName, properties }, { mock: false }).catch(() => {}),
+
+    // ---- Notifications ----
+    getNotificationSettings: () => get('/notifications/settings'),
+    updateNotificationSettings: (settings) => put('/notifications/settings', settings),
+
     // Expose mock data for direct use
-    mock: { CATEGORIES, PRODUCTS, BANNERS, GROUP_BUYS, ORDERS, COUPONS, ADDRESSES, USER, COMMUNITY, REVIEWS },
+    mock: { CATEGORIES, PRODUCTS, BANNERS, GROUP_BUYS, ORDERS, COUPONS, ADDRESSES, USER, COMMUNITY, REVIEWS, EXCHANGE_OPTIONS, USER_REVIEWS, NOTIFICATION_SETTINGS },
   };
 })();

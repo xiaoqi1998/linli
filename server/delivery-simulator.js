@@ -121,20 +121,21 @@ function confirmOrder(orderId) {
 
 /**
  * 演示模式: 完整配送流程 (20→30→40→50)
- * 支付成功后 3 秒派单, 再 3 秒送达, 再 3 秒确认收货
+ * 支付成功后 6 秒派单, 18 秒后送达(期间骑手沿路径移动), 6 秒后自动确认收货
+ * 总时长约30秒, 给用户足够时间在订单详情页观察骑手移动
  */
 function simulateDeliveryFlow(orderId) {
   setTimeout(() => {
     if (!dispatchOrder(orderId)) return;
-    // 3 秒后送达
+    // 18 秒后送达 (骑手18秒移动时间)
     setTimeout(() => {
       if (!deliverOrder(orderId)) return;
-      // 3 秒后自动确认收货 + 结算佣金
+      // 6 秒后自动确认收货 + 结算佣金
       setTimeout(() => {
         confirmOrder(orderId);
-      }, 3000);
-    }, 3000);
-  }, 3000);
+      }, 6000);
+    }, 18000);
+  }, 6000);
 }
 
 /**
@@ -151,16 +152,16 @@ function resumeDeliveryFlow(orderId) {
       console.log(`[Demo] 恢复订单 ${order.order_no} 配送流程 (从 20 开始)`);
       simulateDeliveryFlow(orderId);
     } else if (order.status === 30) {
-      // 已派单未送达: 3 秒后送达 → 再 3 秒确认
+      // 已派单未送达: 10 秒后送达 → 再 6 秒确认
       console.log(`[Demo] 恢复订单 ${order.order_no} 配送流程 (从 30 开始)`);
       setTimeout(() => {
         if (!deliverOrder(orderId)) return;
-        setTimeout(() => confirmOrder(orderId), 3000);
-      }, 3000);
+        setTimeout(() => confirmOrder(orderId), 6000);
+      }, 10000);
     } else if (order.status === 40) {
-      // 已送达未确认: 3 秒后确认收货
+      // 已送达未确认: 6 秒后确认收货
       console.log(`[Demo] 恢复订单 ${order.order_no} 配送流程 (从 40 开始)`);
-      setTimeout(() => confirmOrder(orderId), 3000);
+      setTimeout(() => confirmOrder(orderId), 6000);
     }
   } catch (e) {
     console.error('[Demo] resumeDeliveryFlow error:', e.message);
@@ -190,7 +191,7 @@ function resumeIncompleteDeliveries() {
 }
 
 /**
- * 演示: 模拟骑手沿路径从起点移动到终点 (3 秒内分 6 次更新位置)
+ * 演示: 模拟骑手沿路径从起点移动到终点 (18 秒内分 18 次更新位置, 每秒1步)
  * 让用户端查询 rider-location 能看到位置变化
  */
 function simulateRiderMovement(order, rider) {
@@ -219,14 +220,17 @@ function simulateRiderMovement(order, rider) {
     }
   }
 
-  const steps = 6;
-  const intervalMs = 500; // 0.5 秒一次, 共 3 秒
+  // 与 deliverOrder 的超时时间一致: 18秒, 每秒更新1次位置
+  const steps = 18;
+  const intervalMs = 1000; // 1 秒一次, 共 18 秒
   let step = 0;
   const timer = setInterval(() => {
     step++;
     const t = step / steps;
-    const lat = startLat + (destLat - startLat) * t;
-    const lng = startLng + (destLng - startLng) * t;
+    // 添加微小波动模拟真实路径 (不是笔直的直线)
+    const wobble = Math.sin(step * 0.8) * 0.0003;
+    const lat = startLat + (destLat - startLat) * t + wobble;
+    const lng = startLng + (destLng - startLng) * t + wobble * 0.5;
     try {
       db.prepare(`UPDATE rider SET lat = ?, lng = ?, location_updated_at = ? WHERE id = ?`)
         .run(lat, lng, now(), rider.id);

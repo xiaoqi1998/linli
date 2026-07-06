@@ -11,13 +11,17 @@ function img(text) {
 function detailImgs(text) {
   return JSON.stringify([img(text + '-详情1'), img(text + '-详情2')]);
 }
+// 真实素材本地路径 (图片由 AI 生成后存放于 server/uploads)
+function avatarFor(id) { return `/uploads/avatars/${((id - 1) % 12) + 1}.png`; }
+function prodMain(id) { return `/uploads/products/${id}_main.png`; }
+function prodDetail(id) { return `/uploads/products/${id}_detail.png`; }
 const now = () => new Date().toISOString().replace('T', ' ').substring(0, 19);
 const ago = (min) => new Date(Date.now() - min * 60000).toISOString().replace('T', ' ').substring(0, 19);
 
 // 清空所有表数据 (先子表后父表)
 const TABLES_TO_CLEAR = [
   'cart_items', 'admin_log', 'admin_user', 'admin_role',
-  'refund', 'rider_delivery', 'rider',
+  'refund', 'rider_delivery', 'rider_warehouse', 'rider',
   'group_buy_participant', 'group_buy',
   'leader_withdraw', 'commission_settlement', 'leader',
   'point_transaction', 'user_coupon', 'coupon',
@@ -141,11 +145,11 @@ const seed = db.transaction(() => {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
   `);
   // 原始5个用户
-  insertUser.run(1, '13800138000', defaultPwdHash, '小邻', img('头像'), 2,  628.50, 12, 628, 'search');
-  insertUser.run(2, '13800138001', defaultPwdHash, '王团长', img('王团长'), 3, 1520.00, 42, 1520, 'share');
-  insertUser.run(3, '13800138002', defaultPwdHash, '李团长', img('李团长'), 3,  980.00, 28,  980, 'share');
-  insertUser.run(4, '13800138003', defaultPwdHash, '张阿姨', img('张阿姨'), 2,  445.00,  8,  445, 'search');
-  insertUser.run(5, '13800138004', defaultPwdHash, '陈先生', img('陈先生'), 1,  128.00,  3,  128, 'group');
+  insertUser.run(1, '13800138000', defaultPwdHash, '小邻', avatarFor(1), 2,  628.50, 12, 628, 'search');
+  insertUser.run(2, '13800138001', defaultPwdHash, '王团长', avatarFor(2), 3, 1520.00, 42, 1520, 'share');
+  insertUser.run(3, '13800138002', defaultPwdHash, '李团长', avatarFor(3), 3,  980.00, 28,  980, 'share');
+  insertUser.run(4, '13800138003', defaultPwdHash, '张阿姨', avatarFor(4), 2,  445.00,  8,  445, 'search');
+  insertUser.run(5, '13800138004', defaultPwdHash, '陈先生', avatarFor(5), 1,  128.00,  3,  128, 'group');
   // 新增团长用户 (id 6-23) — 对应社区3-20的团长
   const NEW_LEADER_USERS = [
     [6,  '13800138005', '周强',   'share'],
@@ -168,10 +172,10 @@ const seed = db.transaction(() => {
     [23, '13800138022', '郭峰',   'search'],
   ];
   for (const [id, phone, name, source] of NEW_LEADER_USERS) {
-    insertUser.run(id, phone, defaultPwdHash, name, img(name), 1 + (id % 3), (id * 37.5).toFixed(2), id % 12, id * 30, source);
+    insertUser.run(id, phone, defaultPwdHash, name, avatarFor(id), 1 + (id % 3), (id * 37.5).toFixed(2), id % 12, id * 30, source);
   }
   // 代付测试用户 (子女代付场景)
-  insertUser.run(24, '13800138023', defaultPwdHash, '小邻女儿', img('小邻女儿'), 2, 320.00, 6, 320, 'share');
+  insertUser.run(24, '13800138023', defaultPwdHash, '小邻女儿', avatarFor(24), 2, 320.00, 6, 320, 'share');
 
   // ========================================================================
   // 3. 地址
@@ -191,7 +195,21 @@ const seed = db.transaction(() => {
   // ========================================================================
   const cats = [[1,'蔬菜',1],[2,'水果',2],[3,'肉禽蛋',3],[4,'水产',4],[5,'粮油调味',5],[6,'乳制品',6],[7,'零食饮料',7],[8,'日用百货',8]];
   const insertCat = db.prepare(`INSERT INTO category (id, parent_id, name, icon, sort_order, status) VALUES (?, 0, ?, ?, ?, 1)`);
-  for (const [id, name, sort] of cats) insertCat.run(id, name, img(name), sort);
+  for (const [id, name, sort] of cats) insertCat.run(id, name, `/uploads/categories/${id}.png`, sort);
+
+  // 首页 Banner 轮播 (真实素材位于 server/uploads/banners)
+  const insertBanner = db.prepare(`INSERT INTO banner (title, subtitle, image, bg, link_type, link_value, sort_order, community_ids, status, valid_start, valid_end) VALUES (?, ?, ?, 'banner-fresh', NULL, NULL, ?, NULL, 1, ?, ?)`);
+  const banners = [
+    [1, '新鲜直达 当日采摘', '产地直采 · 社区团购更实惠'],
+    [2, '海鲜水产 鲜活上桌', '冷链直送 · 锁住每一口鲜味'],
+    [3, '肉禽蛋品 源头好肉', '散养土鸡蛋 · 当日现采现发'],
+    [4, '乳制品早餐 营养每一天', '牧场直供 · 品质有保障'],
+    [5, '零食饮料 囤货狂欢', '大牌正品 · 低价来袭'],
+    [6, '日用百货 一站购齐', '居家好物 · 省心省力'],
+  ];
+  for (const [sort, title, subtitle] of banners) {
+    insertBanner.run(title, subtitle, `/uploads/banners/${sort}.png`, sort, now(), new Date(Date.now() + 30 * 86400000).toISOString().replace('T', ' ').substring(0, 19));
+  }
 
   // ========================================================================
   // 5. 商品SKU (30个)
@@ -242,8 +260,10 @@ const seed = db.transaction(() => {
     VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
   `);
   for (const s of skus) {
-    const [id, catId, name, subtitle, image, origin, storage, unit, cost, market, sale, rate, sales] = s;
-    insertSku.run(id, catId, name, subtitle, image, detailImgs(name), origin, storage, unit, cost, market, sale, rate, sales);
+    const [id, catId, name, subtitle, , origin, storage, unit, cost, market, sale, rate, sales] = s;
+    const mainImage = prodMain(id);
+    const detailImages = JSON.stringify([mainImage, prodDetail(id)]);
+    insertSku.run(id, catId, name, subtitle, mainImage, detailImages, origin, storage, unit, cost, market, sale, rate, sales);
   }
 
   // ========================================================================
@@ -315,7 +335,7 @@ const seed = db.transaction(() => {
   for (const l of LEADERS) insertLeader.run(...l);
 
   // ========================================================================
-  // 10. 骑手 (40个: 每个网点2个骑手)
+  // 10. 骑手 (40个: 每个网点2个骑手, 部分骑手跨多个站点)
   // ========================================================================
   const RIDER_NAMES = ['张骑手','陈骑手','刘骑手','赵骑手','孙骑手','周骑手','吴骑手','郑骑手',
     '王骑手','李骑手','冯骑手','陈骑手','褚骑手','卫骑手','蒋骑手','沈骑手',
@@ -326,6 +346,9 @@ const seed = db.transaction(() => {
     INSERT INTO rider (id, name, phone, warehouse_id, status, lat, lng, current_orders, location_updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
+  const insertRiderWh = db.prepare(`
+    INSERT INTO rider_warehouse (rider_id, warehouse_id, is_default, status) VALUES (?, ?, ?, 1)
+  `);
   const n = now();
   let riderId = 1;
   for (const wh of WAREHOUSES) {
@@ -333,12 +356,23 @@ const seed = db.transaction(() => {
     for (let r = 0; r < 2; r++) {
       const name = RIDER_NAMES[(riderId - 1) % RIDER_NAMES.length];
       const phone = '139' + String(130000 + riderId).padStart(6, '0');
-      // 骑手位置在网点附近小幅偏移
       const lat = whLat + (Math.random() - 0.5) * 0.008;
       const lng = whLng + (Math.random() - 0.5) * 0.008;
       insertRider.run(riderId, name, phone, whId, 1, lat, lng, riderId % 3, n);
+      insertRiderWh.run(riderId, whId, 1);
       riderId++;
     }
+  }
+
+  // 部分骑手增加跨站点配送能力 (每个城市的第1个骑手同时服务2个站点)
+  let crossRiderId = 1;
+  for (let i = 0; i < WAREHOUSES.length; i += 2) {
+    const wh1Id = WAREHOUSES[i][0];
+    const wh2Id = WAREHOUSES[i + 1]?.[0];
+    if (wh2Id) {
+      insertRiderWh.run(crossRiderId, wh2Id, 0);
+    }
+    crossRiderId += 2;
   }
 
   // ========================================================================
@@ -436,8 +470,8 @@ const seed = db.transaction(() => {
     VALUES (?, ?, ?, ?, ?, ?)
   `);
   const insertRiderDelivery = db.prepare(`
-    INSERT INTO rider_delivery (rider_id, order_id, status, accept_time, pick_time, deliver_time, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO rider_delivery (rider_id, order_id, status, accept_time, pick_time, deliver_time, distance, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   // Helper to build order
@@ -496,9 +530,12 @@ const seed = db.transaction(() => {
 
     // Rider delivery
     if (riderId && (status === 30 || status === 40 || status === 50)) {
-      insertRiderDelivery.run(riderId, id,
-        status === 50 ? 3 : (status === 40 ? 2 : 1),
-        acceptTime, pickTime, deliverTime, createdAt
+      let deliveryStatus = 1;
+      if (status === 50 || status === 40) deliveryStatus = 3;
+      else if (pickTime) deliveryStatus = 2;
+      const distance = Math.round((Math.random() * 2 + 0.5) * 100) / 100;
+      insertRiderDelivery.run(riderId, id, deliveryStatus,
+        acceptTime, pickTime, deliverTime, distance, createdAt, createdAt
       );
     }
   }
@@ -506,8 +543,8 @@ const seed = db.transaction(() => {
   // ---- 订单数据 ----
   const skuMap = {};
   for (const s of skus) {
-    const [id, catId, name, subtitle, image] = s;
-    skuMap[id] = { id, catId, name, image, spec: s[7], price: s[11] };
+    const [id, catId, name, subtitle] = s;
+    skuMap[id] = { id, catId, name, image: prodMain(id), spec: s[7], price: s[11] };
   }
 
   // 订单1: user1, 已完成, leader1, rider2
