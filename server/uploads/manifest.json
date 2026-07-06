@@ -1,0 +1,126 @@
+{
+  "products": {
+    "1": {
+      "main": "/uploads/products/1_main.png"
+    },
+    "2": {
+      "main": "/uploads/products/2_main.png"
+    },
+    "3": {
+      "main": "/uploads/products/3_main.png"
+    },
+    "4": {
+      "main": "/uploads/products/4_main.png"
+    },
+    "5": {
+      "main": "/uploads/products/5_main.png"
+    },
+    "6": {
+      "main": "/uploads/products/6_main.png"
+    },
+    "7": {
+      "main": "/uploads/products/7_main.png"
+    },
+    "8": {
+      "main": "/uploads/products/8_main.png"
+    },
+    "9": {
+      "main": "/uploads/products/9_main.png"
+    },
+    "10": {
+      "main": "/uploads/products/10_main.png"
+    },
+    "11": {
+      "main": "/uploads/products/11_main.png"
+    },
+    "12": {
+      "main": "/uploads/products/12_main.png"
+    },
+    "13": {
+      "main": "/uploads/products/13_main.png"
+    },
+    "14": {
+      "main": "/uploads/products/14_main.png"
+    },
+    "15": {
+      "main": "/uploads/products/15_main.png"
+    },
+    "16": {
+      "main": "/uploads/products/16_main.png"
+    },
+    "17": {
+      "main": "/uploads/products/17_main.png"
+    },
+    "18": {
+      "main": "/uploads/products/18_main.png"
+    },
+    "19": {
+      "main": "/uploads/products/19_main.png"
+    },
+    "20": {
+      "main": "/uploads/products/20_main.png"
+    },
+    "21": {
+      "main": "/uploads/products/21_main.png"
+    },
+    "22": {
+      "main": "/uploads/products/22_main.png"
+    },
+    "23": {
+      "main": "/uploads/products/23_main.png"
+    },
+    "24": {
+      "main": "/uploads/products/24_main.png"
+    },
+    "25": {
+      "main": "/uploads/products/25_main.png"
+    },
+    "26": {
+      "main": "/uploads/products/26_main.png"
+    },
+    "27": {
+      "main": "/uploads/products/27_main.png"
+    },
+    "28": {
+      "main": "/uploads/products/28_main.png"
+    },
+    "29": {
+      "main": "/uploads/products/29_main.png"
+    },
+    "30": {
+      "main": "/uploads/products/30_main.png"
+    }
+  },
+  "categories": {
+    "1": "/uploads/categories/1.png",
+    "2": "/uploads/categories/2.png",
+    "3": "/uploads/categories/3.png",
+    "4": "/uploads/categories/4.png",
+    "5": "/uploads/categories/5.png",
+    "6": "/uploads/categories/6.png",
+    "7": "/uploads/categories/7.png",
+    "8": "/uploads/categories/8.png"
+  },
+  "avatars": {
+    "1": "/uploads/avatars/1.png",
+    "2": "/uploads/avatars/2.png",
+    "3": "/uploads/avatars/3.png",
+    "4": "/uploads/avatars/4.png",
+    "5": "/uploads/avatars/5.png",
+    "6": "/uploads/avatars/6.png",
+    "7": "/uploads/avatars/7.png",
+    "8": "/uploads/avatars/8.png",
+    "9": "/uploads/avatars/9.png",
+    "10": "/uploads/avatars/10.png",
+    "11": "/uploads/avatars/11.png",
+    "12": "/uploads/avatars/12.png"
+  },
+  "banners": {
+    "1": "/uploads/banners/1.png",
+    "2": "/uploads/banners/2.png",
+    "3": "/uploads/banners/3.png",
+    "4": "/uploads/banners/4.png",
+    "5": "/uploads/banners/5.png",
+    "6": "/uploads/banners/6.png"
+  }
+}

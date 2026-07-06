@@ -36,8 +36,13 @@ build/
 *.bak
 *.bak.*
 
-# 生成的大体积图片资源（AI 生成的商品/分类/头像/banner，部署时单独同步或重新生成）
-server/uploads/
+# 生成的大体积图片资源纳入版本管理, 保证部署后所有素材可用
+# (与 server/seed.js 中 avatarFor/prodMain/categoryIcon/bannerImage 路径模板对应)
+!server/uploads/
+!server/uploads/avatars/
+!server/uploads/categories/
+!server/uploads/products/
+!server/uploads/banners/
 
 # 本地工具数据（含记忆/配置，不入库）
 .workbuddy/
