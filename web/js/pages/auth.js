@@ -90,6 +90,11 @@ const AuthPage = (function () {
               <span class="demo-nav-label">运营后台</span>
               <span class="demo-nav-desc">商品/数据看板</span>
             </a>
+            <a class="demo-nav-item" href="/rider" target="_blank">
+              <span class="demo-nav-icon">🛵</span>
+              <span class="demo-nav-label">骑手端</span>
+              <span class="demo-nav-desc">接单/配送导航</span>
+            </a>
           </div>
         </div>
       </div>

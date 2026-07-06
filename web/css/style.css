@@ -2013,12 +2013,12 @@ textarea.form-input { resize: none; min-height: 70px; }
 
 .auth-footer {
   font-size: 11px;
-  color: rgba(255,255,255,0.5);
+  color: var(--color-muted);
   text-align: center;
   padding-bottom: 20px;
 }
 .auth-footer a {
-  color: rgba(255,255,255,0.8);
+  color: var(--color-primary);
   text-decoration: underline;
 }
 
