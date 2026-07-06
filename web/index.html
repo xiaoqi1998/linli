@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#1a3c2e" />
+  <title>邻里鲜生 · 社区在线超市</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=ZCOOL+XiaoWei&family=Noto+Sans+SC:wght@400;500;700;900&family=DM+Serif+Display&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/style.css?v=7" />
+  <!-- Leaflet 地图 (免费开源, 无需 API Key) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <link rel="stylesheet" href="css/map.css?v=7" />
+</head>
+<body>
+  <!-- Phone frame wrapper for desktop viewing -->
+  <div id="phone-frame" class="phone-frame">
+    <!-- Scrollable app content area -->
+    <div id="app-content" class="app-content">
+      <div id="page-container" class="page-container">
+        <!-- Pages render here -->
+      </div>
+    </div>
+
+    <!-- Bottom tab bar -->
+    <nav id="tab-bar" class="tab-bar">
+      <a class="tab-item active" data-route="home" href="#/home">
+        <span class="tab-icon">🏠</span>
+        <span class="tab-label">首页</span>
+      </a>
+      <a class="tab-item" data-route="category" href="#/category">
+        <span class="tab-icon">🥬</span>
+        <span class="tab-label">分类</span>
+      </a>
+      <a class="tab-item" data-route="orders" href="#/orders">
+        <span class="tab-icon">📋</span>
+        <span class="tab-label">订单</span>
+      </a>
+      <a class="tab-item" data-route="member" href="#/member">
+        <span class="tab-icon">👤</span>
+        <span class="tab-label">我的</span>
+      </a>
+    </nav>
+
+    <!-- Floating cart bar (shown on home/category) -->
+    <div id="cart-float" class="cart-float hidden">
+      <div class="cart-float-icon" id="cart-float-icon">
+        <span class="cart-float-emoji">🛒</span>
+        <span class="cart-float-badge" id="cart-float-badge">0</span>
+      </div>
+      <div class="cart-float-info">
+        <span class="cart-float-total" id="cart-float-total">¥0.00</span>
+        <span class="cart-float-tip">还差¥0元起送</span>
+      </div>
+      <button class="cart-float-btn" id="cart-float-btn">去结算</button>
+    </div>
+  </div>
+
+  <!-- Toast notification container -->
+  <div id="toast" class="toast hidden"></div>
+
+  <!-- Modal / dialog container -->
+  <div id="modal-overlay" class="modal-overlay hidden">
+    <div class="modal-box" id="modal-box"></div>
+  </div>
+
+  <!-- Bottom sheet container -->
+  <div id="sheet-overlay" class="sheet-overlay hidden">
+    <div class="sheet-box" id="sheet-box"></div>
+  </div>
+
+  <!-- Page scripts -->
+  <script src="js/api.js?v=7"></script>
+  <script src="js/components/map.js?v=7"></script>
+  <script src="js/pages/auth.js?v=7"></script>
+  <script src="js/pages/home.js?v=7"></script>
+  <script src="js/pages/search.js?v=7"></script>
+  <script src="js/pages/product.js?v=7"></script>
+  <script src="js/pages/cart.js?v=7"></script>
+  <script src="js/pages/order-confirm.js?v=7"></script>
+  <script src="js/pages/order-list.js?v=7"></script>
+  <script src="js/pages/order-detail.js?v=7"></script>
+  <script src="js/pages/group-buy.js?v=7"></script>
+  <script src="js/pages/member.js?v=7"></script>
+  <script src="js/pages/category.js?v=7"></script>
+  <script src="js/pages/proxy-pay.js?v=7"></script>
+  <script src="js/app.js?v=7"></script>
+</body>
+</html>

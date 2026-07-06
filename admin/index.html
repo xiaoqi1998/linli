@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>邻里鲜生 · 运营后台</title>
+  <link rel="stylesheet" href="css/admin.css?v=2">
+</head>
+<body>
+  <div id="app">
+    <aside class="sidebar">
+      <div class="sidebar-logo">
+        <span class="logo-emoji">🥬</span>
+        <span class="logo-text">邻里鲜生</span>
+      </div>
+      <nav class="sidebar-nav">
+        <a class="nav-item active" data-page="dashboard" onclick="Admin.go('dashboard')">
+          <span class="nav-icon">📊</span><span>数据看板</span>
+        </a>
+        <a class="nav-item" data-page="orders" onclick="Admin.go('orders')">
+          <span class="nav-icon">📦</span><span>订单管理</span>
+        </a>
+        <a class="nav-item" data-page="products" onclick="Admin.go('products')">
+          <span class="nav-icon">🛒</span><span>商品管理</span>
+        </a>
+        <a class="nav-item" data-page="leaders" onclick="Admin.go('leaders')">
+          <span class="nav-icon">👥</span><span>团长管理</span>
+        </a>
+        <a class="nav-item" data-page="coupons" onclick="Admin.go('coupons')">
+          <span class="nav-icon">🎫</span><span>优惠券管理</span>
+        </a>
+        <a class="nav-item" data-page="riders" onclick="Admin.go('riders')">
+          <span class="nav-icon">🚴</span><span>骑手管理</span>
+        </a>
+        <a class="nav-item" data-page="inventory" onclick="Admin.go('inventory')">
+          <span class="nav-icon">📦</span><span>库存管理</span>
+        </a>
+      </nav>
+      <div class="sidebar-footer">
+        <a href="/" class="back-link">← 返回用户端</a>
+      </div>
+    </aside>
+    <main class="main-content" id="main-content">
+      <div class="loading">加载中...</div>
+    </main>
+  </div>
+  <script src="js/admin-api.js?v=2"></script>
+  <script src="js/admin-app.js?v=2"></script>
+</body>
+</html>

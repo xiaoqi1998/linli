@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>邻里鲜生 · 团长工作台</title>
+  <link rel="stylesheet" href="css/leader.css?v=2">
+</head>
+<body>
+  <div id="app">
+    <header class="app-header">
+      <a href="/" class="back-btn">←</a>
+      <span class="app-title">团长工作台</span>
+      <span class="header-spacer"></span>
+    </header>
+    <main class="app-main" id="app-main">
+      <div class="loading">加载中...</div>
+    </main>
+    <nav class="tabbar">
+      <a class="tab-item active" data-tab="dashboard" onclick="Leader.go('dashboard')">
+        <span class="tab-icon">📊</span><span class="tab-label">数据</span>
+      </a>
+      <a class="tab-item" data-tab="orders" onclick="Leader.go('orders')">
+        <span class="tab-icon">📦</span><span class="tab-label">订单</span>
+      </a>
+      <a class="tab-item" data-tab="group" onclick="Leader.go('group')">
+        <span class="tab-icon">🤝</span><span class="tab-label">拼团</span>
+      </a>
+      <a class="tab-item" data-tab="commission" onclick="Leader.go('commission')">
+        <span class="tab-icon">💰</span><span class="tab-label">佣金</span>
+      </a>
+    </nav>
+  </div>
+  <script src="js/leader-api.js?v=2"></script>
+  <script src="js/leader-app.js?v=2"></script>
+</body>
+</html>
