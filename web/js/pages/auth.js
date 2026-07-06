@@ -72,6 +72,26 @@ const AuthPage = (function () {
         <div class="auth-footer">
           登录即代表同意<a href="javascript:void(0)" onclick="App.toast('用户协议')">《用户协议》</a>和<a href="javascript:void(0)" onclick="App.toast('隐私政策')">《隐私政策》</a>
         </div>
+
+        <div class="demo-nav">
+          <div class="demo-nav-title">
+            <span class="demo-nav-line"></span>
+            <span class="demo-nav-text">演示快捷入口</span>
+            <span class="demo-nav-line"></span>
+          </div>
+          <div class="demo-nav-grid">
+            <a class="demo-nav-item" href="/leader" target="_blank">
+              <span class="demo-nav-icon">🙋</span>
+              <span class="demo-nav-label">团长工作台</span>
+              <span class="demo-nav-desc">订单/配送管理</span>
+            </a>
+            <a class="demo-nav-item" href="/admin" target="_blank">
+              <span class="demo-nav-icon">🛠️</span>
+              <span class="demo-nav-label">运营后台</span>
+              <span class="demo-nav-desc">商品/数据看板</span>
+            </a>
+          </div>
+        </div>
       </div>
     `;
     return html;

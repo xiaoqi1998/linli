@@ -2022,6 +2022,65 @@ textarea.form-input { resize: none; min-height: 70px; }
   text-decoration: underline;
 }
 
+/* Demo navigation entries (团长 / 管理后台) */
+.demo-nav {
+  width: 100%;
+  margin-top: 4px;
+  padding-bottom: 24px;
+}
+.demo-nav-title {
+  display: flex;
+  align-items: center;
+  margin-bottom: 14px;
+}
+.demo-nav-line {
+  flex: 1;
+  height: 1px;
+  background: rgba(255,255,255,0.25);
+}
+.demo-nav-text {
+  padding: 0 12px;
+  font-size: 12px;
+  color: rgba(255,255,255,0.75);
+  letter-spacing: 1px;
+}
+.demo-nav-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.demo-nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 14px 8px;
+  background: rgba(255,255,255,0.92);
+  border-radius: var(--radius-card-sm);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.08);
+  transition: transform 0.15s, box-shadow 0.15s;
+  text-align: center;
+}
+.demo-nav-item:active {
+  transform: scale(0.97);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+.demo-nav-icon {
+  font-size: 26px;
+  line-height: 1;
+}
+.demo-nav-label {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-primary);
+  margin-top: 2px;
+}
+.demo-nav-desc {
+  font-size: 11px;
+  color: var(--color-muted);
+}
+
 /* ==========================================================================
    Search Page
    ========================================================================== */
