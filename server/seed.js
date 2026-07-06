@@ -351,6 +351,7 @@ const seed = db.transaction(() => {
   `);
   const n = now();
   let riderId = 1;
+  // 先创建所有骑手 (每个站点2名)
   for (const wh of WAREHOUSES) {
     const [whId, , , , whLat, whLng] = wh;
     for (let r = 0; r < 2; r++) {
@@ -359,20 +360,18 @@ const seed = db.transaction(() => {
       const lat = whLat + (Math.random() - 0.5) * 0.008;
       const lng = whLng + (Math.random() - 0.5) * 0.008;
       insertRider.run(riderId, name, phone, whId, 1, lat, lng, riderId % 3, n);
-      insertRiderWh.run(riderId, whId, 1);
       riderId++;
     }
   }
 
-  // 部分骑手增加跨站点配送能力 (每个城市的第1个骑手同时服务2个站点)
-  let crossRiderId = 1;
-  for (let i = 0; i < WAREHOUSES.length; i += 2) {
-    const wh1Id = WAREHOUSES[i][0];
-    const wh2Id = WAREHOUSES[i + 1]?.[0];
-    if (wh2Id) {
-      insertRiderWh.run(crossRiderId, wh2Id, 0);
+  // 每个骑手关联所有站点 (第一个站点为默认)
+  const totalRiders = riderId - 1;
+  for (let rid = 1; rid <= totalRiders; rid++) {
+    for (let widx = 0; widx < WAREHOUSES.length; widx++) {
+      const whId = WAREHOUSES[widx][0];
+      const isDefault = (widx === 0) ? 1 : 0;
+      insertRiderWh.run(rid, whId, isDefault);
     }
-    crossRiderId += 2;
   }
 
   // ========================================================================

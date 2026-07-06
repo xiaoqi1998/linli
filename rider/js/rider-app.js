@@ -20,10 +20,35 @@ const Rider = (function () {
       updateHeader();
       startLocationTracking();
       startOrderRefresh();
+      await go('orders');
     } catch (e) {
       console.error('初始化失败:', e);
+      renderInitError(e.message || '初始化失败，请检查网络或联系管理员');
     }
-    await go('orders');
+  }
+
+  function renderInitError(msg) {
+    const main = document.getElementById('app-main');
+    if (main) {
+      main.innerHTML = `
+        <div class="empty-state" style="padding-top:40vh;">
+          <span class="empty-emoji">⚠️</span>
+          <div class="empty-desc">${msg}</div>
+          <div style="margin-top:16px;display:flex;gap:12px;justify-content:center;">
+            <button class="btn btn-primary" onclick="Rider.retryInit()">重新加载</button>
+            <button class="btn btn-outline" onclick="Rider.logout()">退出</button>
+          </div>
+        </div>
+      `;
+    }
+    const whEl = document.getElementById('current-warehouse');
+    if (whEl) whEl.textContent = '暂无站点';
+  }
+
+  async function retryInit() {
+    const main = document.getElementById('app-main');
+    if (main) main.innerHTML = '<div class="loading">加载中...</div>';
+    await init();
   }
 
   function updateHeader() {
@@ -31,13 +56,19 @@ const Rider = (function () {
     if (nameEl) nameEl.textContent = riderInfo?.name || '骑手';
     const statusEl = document.getElementById('online-status');
     if (statusEl) {
-      statusEl.textContent = '在线';
-      statusEl.className = 'status-badge online';
+      statusEl.textContent = riderInfo ? '在线' : '离线';
+      statusEl.className = 'status-badge ' + (riderInfo ? 'online' : '');
     }
     const whEl = document.getElementById('current-warehouse');
-    if (whEl && currentWarehouseId) {
-      const wh = warehouses.find(w => w.id === currentWarehouseId);
-      whEl.textContent = wh?.name || '选择站点';
+    if (whEl) {
+      if (currentWarehouseId) {
+        const wh = warehouses.find(w => w.id === currentWarehouseId);
+        whEl.textContent = wh?.name || '选择站点';
+      } else if (warehouses.length === 0) {
+        whEl.textContent = '暂无站点';
+      } else {
+        whEl.textContent = '选择站点';
+      }
     }
   }
 
@@ -521,6 +552,7 @@ const Rider = (function () {
     callUser,
     toast,
     logout,
+    retryInit,
   };
 })();
 
