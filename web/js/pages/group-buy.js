@@ -21,7 +21,7 @@ const GroupBuyPage = (function () {
       const remain = gb.targetCount - gb.joinedCount;
       html += `
         <div class="gb-card" onclick="App.go('group-buy/${gb.id}')">
-          <div class="gb-card-img ${gb.bg || 'bg-fruit'}">${gb.emoji || '🛒'}</div>
+          <div class="gb-card-img ${gb.bg || 'bg-fruit'}">${gb.mainImage || gb.image ? `<img src="${gb.mainImage || gb.image}" onerror="this.outerHTML='<span>${gb.emoji || '🛒'}</span>'">` : (gb.emoji || '🛒')}</div>
           <div class="gb-card-info">
             <div class="gb-card-name">${gb.name}</div>
             <div class="gb-card-prices">
@@ -66,7 +66,7 @@ const GroupBuyPage = (function () {
           <div class="nav-title">拼团详情</div>
         </div>
         <div class="gb-detail-header ${gb.bg || 'bg-fruit'}">
-          <span class="gb-detail-emoji">${gb.emoji || '🛒'}</span>
+          <span class="gb-detail-emoji">${gb.mainImage || gb.image ? `<img src="${gb.mainImage || gb.image}" onerror="this.outerHTML='<span>${gb.emoji || '🛒'}</span>'">` : (gb.emoji || '🛒')}</span>
           <div class="gb-detail-info">
             <h2>${gb.name}</h2>
             <div class="gb-detail-prices">

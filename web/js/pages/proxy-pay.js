@@ -42,7 +42,7 @@ const ProxyPayPage = (function () {
     const items = orderInfo.items || [];
     let itemsHtml = items.map(i => `
       <div class="proxy-item">
-        <div class="proxy-item-emoji">${i.emoji || '📦'}</div>
+        <div class="proxy-item-emoji">${i.image || i.mainImage ? `<img src="${i.image || i.mainImage}" onerror="this.outerHTML='<span>${i.emoji || '📦'}</span>'">` : (i.emoji || '📦')}</div>
         <div class="proxy-item-info">
           <div class="proxy-item-name">${i.name}</div>
           <div class="proxy-item-spec">${i.spec || ''} × ${i.quantity}</div>

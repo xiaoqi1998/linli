@@ -86,10 +86,7 @@ const SearchPage = (function () {
   function suggestCardHtml(p) {
     return `
       <div class="product-card" onclick="App.go('product/${p.id}')">
-        <div class="product-img">
-          <div class="product-img-bg ${p.bg}"></div>
-          <span class="product-img-emoji">${p.emoji}</span>
-        </div>
+        ${App.productImgHtml(p)}
         <div class="product-body">
           <div class="product-name">${p.name}</div>
           <div class="product-spec">${p.spec || ''}</div>

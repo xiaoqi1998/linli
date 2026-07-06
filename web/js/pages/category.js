@@ -22,6 +22,7 @@ const CategoryPage = (function () {
     return {
       id: c.id,
       name: c.name,
+      icon: c.icon || '',
       emoji: c.emoji || CAT_EMOJI_MAP[c.name] || '🛒',
       bg: c.bg || CAT_BG_MAP[c.name] || '',
     };
@@ -67,7 +68,7 @@ const CategoryPage = (function () {
             <div class="cat-sidebar">
               ${categories.map((c, i) => `
                 <div class="cat-side-item ${i === 0 ? 'active' : ''}" data-cat="${c.id}" onclick="CategoryPage.selectCat(${c.id}, this)">
-                  <span class="cat-side-emoji">${c.emoji}</span>
+                  ${c.icon ? `<img src="${c.icon}" class="cat-side-emoji" onerror="this.outerHTML='<span class=\\'cat-side-emoji\\'>${c.emoji}</span>'">` : `<span class="cat-side-emoji">${c.emoji}</span>`}
                   <span class="cat-side-name">${c.name}</span>
                 </div>
               `).join('')}
@@ -85,7 +86,7 @@ const CategoryPage = (function () {
   function renderProducts(catId, products, cats) {
     const filtered = products.filter(p => p.categoryId === catId);
     const cat = cats.find(c => c.id === catId);
-    let html = `<div class="cat-header"><h3>${cat.emoji} ${cat.name}</h3><span class="cat-count">${filtered.length}件</span></div>`;
+    let html = `<div class="cat-header"><h3>${cat.icon ? `<img src="${cat.icon}" style="width:24px;height:24px;object-fit:cover;border-radius:6px;vertical-align:middle;margin-right:4px;" onerror="this.outerHTML='<span>${cat.emoji}</span>'">` : cat.emoji} ${cat.name}</h3><span class="cat-count">${filtered.length}件</span></div>`;
     if (!filtered.length) {
       html += '<div class="empty-state"><span class="empty-emoji">📦</span><p>该分类暂无商品</p></div>';
       return html;

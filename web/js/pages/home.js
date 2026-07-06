@@ -65,17 +65,18 @@ const HomePage = (function () {
         API.getBanners(),
       ]);
       currentData.products = products.list || products || [];
-      // Normalize categories: API returns {id, name, icon(url)} - need emoji/bg
+      // Normalize categories: API returns {id, name, icon(url), emoji, bg}
       const rawCats = Array.isArray(categories) ? categories : (categories.list || []);
       const CAT_EMOJI = {'蔬菜':'🥬','水果':'🍎','肉禽蛋':'🥚','水产':'🐟','粮油调味':'🍚','乳制品':'🥛','零食饮料':'🥤','日用百货':'🧻'};
       const CAT_BG = {'蔬菜':'bg-veg','水果':'bg-fruit','肉禽蛋':'bg-meat','水产':'bg-sea','粮油调味':'bg-grain','乳制品':'bg-milk','零食饮料':'bg-snack','日用百货':'bg-daily'};
       currentData.categories = rawCats.map(c => ({
         id: c.id, name: c.name,
+        icon: c.icon || '',
         emoji: c.emoji || CAT_EMOJI[c.name] || '🛒',
         bg: c.bg || CAT_BG[c.name] || 'bg-veg',
       }));
       // Normalize banners: API returns {list: [{id, title, subtitle, image, linkType, linkValue, bg}]}
-      // Frontend expects {id, title, subtitle, emoji, bg, link}
+      // Frontend expects {id, title, subtitle, image, emoji, bg, link}
       const rawBanners = Array.isArray(banners) ? banners : (banners.list || []);
       const BANNER_BG_MAP = {'banner-fresh': 'bg-fruit', 'banner-group': 'bg-green', 'banner-new': 'bg-gold'};
       const BANNER_EMOJI_MAP = {'banner-fresh': '🍒', 'banner-group': '🛒', 'banner-new': '🎁'};
@@ -84,6 +85,7 @@ const HomePage = (function () {
         id: b.id,
         title: b.title,
         subtitle: b.subtitle,
+        image: b.image || '',
         emoji: b.emoji || BANNER_EMOJI_MAP[b.bg] || '🛒',
         bg: BANNER_BG_MAP[b.bg] || b.bg || 'bg-green',
         link: b.link || (b.linkType === 'groupBuy' ? 'group-buy' : b.linkType === 'category' ? 'category' : 'home'),
@@ -136,7 +138,7 @@ const HomePage = (function () {
                   <div class="banner-slide-title">${b.title}</div>
                   <div class="banner-slide-sub">${b.subtitle}</div>
                 </div>
-                <div class="banner-slide-emoji">${b.emoji}</div>
+                ${b.image ? `<img src="${b.image}" class="banner-slide-emoji" onerror="this.outerHTML='<span class=\\'banner-slide-emoji\\'>${b.emoji}</span>'">` : `<span class="banner-slide-emoji">${b.emoji}</span>`}
               </div>
             `).join('')}
           </div>
@@ -150,7 +152,7 @@ const HomePage = (function () {
       <div class="category-nav">
         ${categories.map(c => `
           <div class="cat-nav-item" onclick="HomePage.goCategory(${c.id})">
-            <div class="cat-nav-emoji ${c.bg}">${c.emoji}</div>
+            ${c.icon ? `<img src="${c.icon}" class="cat-nav-emoji ${c.bg}" onerror="this.outerHTML='<span class=\\'cat-nav-emoji ${c.bg}\\'>${c.emoji}</span>'">` : `<div class="cat-nav-emoji ${c.bg}">${c.emoji}</div>`}
             <div class="cat-nav-label">${c.name}</div>
           </div>
         `).join('')}
@@ -216,12 +218,7 @@ const HomePage = (function () {
     const tags = (p.tags || []).slice(0, 2);
     return `
       <div class="product-card" onclick="HomePage.viewProduct(${p.id})">
-        <div class="product-img">
-          <div class="product-img-bg ${p.bg}"></div>
-          <span class="product-img-emoji">${p.emoji}</span>
-          ${tags.length ? `<div class="product-tags">${tags.map(t => `<span class="product-tag ${App.tagClass(t)}">${App.tagLabel(t)}</span>`).join('')}</div>` : ''}
-          ${soldOut ? `<div class="product-soldout"><span>补货中</span></div>` : ''}
-        </div>
+        ${App.productImgHtml(p, (tags.length ? `<div class="product-tags">${tags.map(t => `<span class="product-tag ${App.tagClass(t)}">${App.tagLabel(t)}</span>`).join('')}</div>` : '') + (soldOut ? `<div class="product-soldout"><span>补货中</span></div>` : ''))}
         <div class="product-body">
           <div class="product-name">${p.name}</div>
           <div class="product-spec">${p.spec || ''}</div>

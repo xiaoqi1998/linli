@@ -90,7 +90,7 @@ const OrderConfirmPage = (function () {
         <div class="section-title" style="margin-bottom:4px;">商品清单 (${items.length})</div>
         ${items.map(item => `
           <div class="oc-item">
-            <div class="oc-item-img ${item.bg || 'bg-paper'}">${item.emoji || '📦'}</div>
+            <div class="oc-item-img ${item.bg || 'bg-paper'}">${item.image || item.mainImage ? `<img src="${item.image || item.mainImage}" onerror="this.outerHTML='<span>${item.emoji || '📦'}</span>'">` : (item.emoji || '📦')}</div>
             <div class="oc-item-info">
               <div class="oc-item-name">${item.name}</div>
               <div class="oc-item-spec">${item.spec || ''}</div>

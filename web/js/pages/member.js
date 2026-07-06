@@ -131,7 +131,7 @@ const MemberPage = (function () {
             ${myReviewList.map(r => `
               <div class="review-item">
                 <div class="review-head">
-                  <div class="review-avatar ${r.bg || 'bg-veg'}">${r.emoji || '📦'}</div>
+                  <div class="review-avatar ${r.bg || 'bg-veg'}">${r.image || r.mainImage ? `<img src="${r.image || r.mainImage}" onerror="this.outerHTML='<span>${r.emoji || '📦'}</span>'">` : (r.emoji || '📦')}</div>
                   <span class="review-name">${r.skuName || ''}</span>
                   <span class="review-stars">${'★'.repeat(r.rating || r.stars || 5)}${'☆'.repeat(5 - (r.rating || r.stars || 5))}</span>
                 </div>

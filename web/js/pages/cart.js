@@ -55,7 +55,7 @@ const CartPage = (function () {
     return `
       <div class="cart-item" id="cart-item-${idx}">
         <div class="cart-check ${selected ? 'checked' : ''}" onclick="CartPage.toggleSelect(${idx})">✓</div>
-        <div class="cart-item-img ${item.bg || 'bg-paper'}">${item.emoji || '📦'}</div>
+        <div class="cart-item-img ${item.bg || 'bg-paper'}">${item.image ? `<img src="${item.image}" onerror="this.outerHTML='<span>${item.emoji || '📦'}</span>'">` : (item.emoji || '📦')}</div>
         <div class="cart-item-info">
           <div class="cart-item-name">${item.name || '商品'}</div>
           <div class="cart-item-spec">${item.spec || ''}</div>

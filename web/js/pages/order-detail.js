@@ -51,7 +51,7 @@ const OrderDetailPage = (function () {
       const itemSkuId = item.skuId || item.sku_id || item.id;
       itemsHtml += `
         <div class="order-item-row">
-          <span class="product-emoji ${item.bg || 'bg-veg'}">${item.emoji || '📦'}</span>
+          <span class="product-emoji ${item.bg || 'bg-veg'}">${item.image || item.mainImage ? `<img src="${item.image || item.mainImage}" onerror="this.outerHTML='<span>${item.emoji || '📦'}</span>'">` : (item.emoji || '📦')}</span>
           <div class="order-item-info">
             <span class="order-item-name">${item.name}</span>
             <span class="order-item-spec">${item.spec || ''} x${item.quantity}</span>

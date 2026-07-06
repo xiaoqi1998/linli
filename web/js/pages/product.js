@@ -78,10 +78,14 @@ const ProductPage = (function () {
       <!-- Image Carousel -->
       <div class="pd-carousel" id="pd-carousel">
         <div class="pd-carousel-track" id="pd-track">
-          <div class="pd-carousel-slide"><div class="${p.bg}" style="position:absolute;inset:0;"></div><span class="pd-img-emoji">${p.emoji}</span></div>
-          ${Array.from({ length: detailImgCount - 1 }, (_, i) =>
-            `<div class="pd-carousel-slide"><div class="${p.bg}" style="position:absolute;inset:0;opacity:0.7;"></div><span class="pd-img-emoji" style="font-size:90px;">${p.emoji}</span></div>`
-          ).join('')}
+          ${(p.detailImages || []).length ? (p.detailImages || [p.mainImage]).map((img, i) => `
+            <div class="pd-carousel-slide">
+              <div class="${p.bg}" style="position:absolute;inset:0;opacity:${i===0?1:0.7};"></div>
+              ${img ? `<img src="${img}" class="pd-img-emoji" style="font-size:90px;" onerror="this.outerHTML='<span class=\\'pd-img-emoji\\' style=\\'font-size:90px;\\'>${p.emoji}</span>'">` : `<span class="pd-img-emoji" style="font-size:90px;">${p.emoji}</span>`}
+            </div>
+          `).join('') : `
+            <div class="pd-carousel-slide"><div class="${p.bg}" style="position:absolute;inset:0;"></div>${p.mainImage ? `<img src="${p.mainImage}" class="pd-img-emoji" onerror="this.outerHTML='<span class=\\'pd-img-emoji\\'>${p.emoji}</span>'">` : `<span class="pd-img-emoji">${p.emoji}</span>`}</div>
+          `}
         </div>
         <div class="pd-carousel-dots" id="pd-dots">
           ${Array.from({ length: detailImgCount }, (_, i) => `<div class="banner-dot ${i === 0 ? 'active' : ''}"></div>`).join('')}
@@ -150,7 +154,7 @@ const ProductPage = (function () {
           return `
           <div class="review-item">
             <div class="review-head">
-              <div class="review-avatar bg-gold">${rAvatar}</div>
+              <div class="review-avatar bg-gold">${rAvatar && rAvatar.startsWith('/') ? `<img src="${rAvatar}" onerror="this.outerHTML='<span>${rAvatar}</span>'">` : rAvatar}</div>
               <span class="review-name">${rName}</span>
               <span class="review-stars">${'★'.repeat(rStars)}${'☆'.repeat(5 - rStars)}</span>
             </div>
@@ -180,10 +184,7 @@ const ProductPage = (function () {
         <div style="display:flex;gap:10px;overflow-x:auto;scrollbar-width:none;padding-bottom:4px;">
           ${(await getRelated(p)).map(rp => `
             <div class="product-card" style="min-width:130px;flex-shrink:0;" onclick="App.go('product/${rp.id}')">
-              <div class="product-img" style="aspect-ratio:1/1;">
-                <div class="product-img-bg ${rp.bg}"></div>
-                <span class="product-img-emoji" style="font-size:40px;">${rp.emoji}</span>
-              </div>
+              ${App.productImgHtml(rp, '')}
               <div class="product-body" style="padding:8px;">
                 <div class="product-name" style="font-size:12px;min-height:32px;">${rp.name}</div>
                 <div class="product-price-now" style="font-size:15px;">${App.fmtMoney(rp.price)}</div>
@@ -251,7 +252,7 @@ const ProductPage = (function () {
     App.showSheet(action === 'buy' ? '立即购买' : '加入购物车', `
       <div class="spec-sheet-content">
         <div class="spec-product">
-          <div class="spec-product-img ${p.bg}">${p.emoji}</div>
+          <div class="spec-product-img ${p.bg}">${p.mainImage ? `<img src="${p.mainImage}" onerror="this.outerHTML='<span>${p.emoji}</span>'">` : p.emoji}</div>
           <div class="spec-product-info">
             <div class="spec-product-name">${p.name}</div>
             <div class="spec-product-price" id="spec-price">${App.fmtMoney(curPrice)}</div>

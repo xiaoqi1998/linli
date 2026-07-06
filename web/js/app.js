@@ -289,8 +289,10 @@ const App = (function () {
     return 'tag-' + tag;
   }
 
-  function productImgHtml(p) {
-    return `<div class="product-img"><div class="product-img-bg ${p.bg}"></div><span class="product-img-emoji">${p.emoji}</span></div>`;
+  function productImgHtml(p, extraHtml) {
+    const src = p.mainImage || p.image || '';
+    const emoji = p.emoji || '🛒';
+    return `<div class="product-img"><div class="product-img-bg ${p.bg}"></div>${src ? `<img src="${src}" class="product-img-emoji" onerror="this.outerHTML='<span class=\\'product-img-emoji\\'>${emoji}</span>'">` : `<span class="product-img-emoji">${emoji}</span>`}${extraHtml || ''}</div>`;
   }
 
   function renderProductCard(p) {
@@ -298,12 +300,7 @@ const App = (function () {
     const tags = (p.tags || []).slice(0, 2);
     return `
       <div class="product-card" onclick="App.go('product/${p.id}')">
-        <div class="product-img">
-          <div class="product-img-bg ${p.bg}"></div>
-          <span class="product-img-emoji">${p.emoji}</span>
-          ${tags.length ? `<div class="product-tags">${tags.map(t => `<span class="product-tag ${tagClass(t)}">${tagLabel(t)}</span>`).join('')}</div>` : ''}
-          ${soldOut ? `<div class="product-soldout"><span>补货中</span></div>` : ''}
-        </div>
+        ${productImgHtml(p, (tags.length ? `<div class="product-tags">${tags.map(t => `<span class="product-tag ${tagClass(t)}">${tagLabel(t)}</span>`).join('')}</div>` : '') + (soldOut ? `<div class="product-soldout"><span>补货中</span></div>` : ''))}
         <div class="product-body">
           <div class="product-name">${p.name}</div>
           <div class="product-spec">${p.spec || ''}</div>

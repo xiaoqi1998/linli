@@ -58,7 +58,7 @@ const OrderListPage = (function () {
         </div>
         <div class="order-goods">
           ${showItems.map(it => `
-            <div class="order-goods-img ${it.bg || 'bg-veg'}">${it.emoji || '📦'}</div>
+            <div class="order-goods-img ${it.bg || 'bg-veg'}">${it.image || it.mainImage ? `<img src="${it.image || it.mainImage}" onerror="this.outerHTML='<span>${it.emoji || '📦'}</span>'">` : (it.emoji || '📦')}</div>
           `).join('')}
           ${moreCount > 0 ? `<div class="order-goods-more">+${moreCount}</div>` : ''}
         </div>

@@ -2187,3 +2187,49 @@ textarea.form-input { resize: none; min-height: 70px; }
   color: var(--color-muted);
   margin-bottom: 10px;
 }
+
+/* ==========================================================================
+   图片素材适配：所有 emoji 占位容器内的 img 自动填满
+   ========================================================================== */
+.cart-item-img,
+.oc-item-img,
+.order-goods-img,
+.gb-card-img,
+.gb-detail-emoji,
+.gb-banner-emoji,
+.gb-avatar,
+.product-emoji,
+.spec-product-img,
+.proxy-item-emoji,
+.cat-nav-emoji,
+.cat-side-emoji,
+.banner-slide-emoji,
+.pd-img-emoji,
+.review-avatar,
+.pd-leader-avatar {
+  position: relative;
+  overflow: hidden;
+}
+.cart-item-img img,
+.oc-item-img img,
+.order-goods-img img,
+.gb-card-img img,
+.gb-detail-emoji img,
+.gb-banner-emoji img,
+.gb-avatar img,
+.product-emoji img,
+.spec-product-img img,
+.proxy-item-emoji img,
+.cat-nav-emoji img,
+.cat-side-emoji img,
+.banner-slide-emoji img,
+.pd-img-emoji img,
+.review-avatar img,
+.pd-leader-avatar img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
