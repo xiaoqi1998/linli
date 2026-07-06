@@ -48,7 +48,7 @@
   --phone-height: 880px;
 
   --tab-h: 60px;
-  --safe-bottom: 8px;
+  --safe-bottom: env(safe-area-inset-bottom, 8px);
 }
 
 /* ---------- Reset ---------- */
@@ -103,12 +103,13 @@ input, textarea { font-family: inherit; outline: none; border: none; }
   body { padding: 0; background: var(--color-bg); }
   .phone-frame {
     width: 100vw;
-    height: 100vh;
-    max-height: 100vh;
+    height: 100dvh;
+    max-height: 100dvh;
     border-radius: 0;
     box-shadow: none;
+    padding-bottom: env(safe-area-inset-bottom, 0);
   }
-  .category-page { height: calc(100vh - var(--tab-h)); }
+  .category-page { height: calc(100dvh - var(--tab-h) - env(safe-area-inset-bottom, 0)); }
 }
 
 
