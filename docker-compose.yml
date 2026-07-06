@@ -1,6 +1,7 @@
 # ==========================================================================
-# 邻里鲜生 · Docker Compose 部署
-# 单容器同时托管: 后端 API + 三端前端 (web/leader/admin)
+# 邻里鲜生 · Docker Compose 部署 (简化更新版)
+# 依赖构建进镜像一次; 代码/前端通过 bind mount 挂载; 图片随 server 目录持久
+# 更新方式: 服务器 git pull + docker compose restart (无需 rebuild 镜像)
 # ==========================================================================
 services:
   linli-fresh:
@@ -16,8 +17,13 @@ services:
     volumes:
       # 数据库持久化 (容器重启不丢数据)
       - linli-data:/app/server/data
-      # 商品图片持久化 (容器重建不丢图片)
-      - linli-uploads:/app/server/uploads
+      # 代码与素材 bind mount: 宿主机改完 git pull + restart 即生效
+      - ./server:/app/server
+      - /app/server/node_modules          # 匿名卷, 保留镜像内已装好的依赖, 不被宿主机空目录覆盖
+      - ./web:/app/web
+      - ./admin:/app/admin
+      - ./leader:/app/leader
+      - ./rider:/app/rider
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
       interval: 30s
@@ -27,6 +33,4 @@ services:
 
 volumes:
   linli-data:
-    driver: local
-  linli-uploads:
     driver: local
