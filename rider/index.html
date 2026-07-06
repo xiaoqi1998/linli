@@ -4,52 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>邻里鲜生 · 骑手端</title>
-  <link rel="stylesheet" href="css/rider.css">
+  <link rel="stylesheet" href="css/rider.css?v=20260706">
 </head>
 <body>
   <div id="app">
-    <div id="app-header">
-      <div class="header-left">
-        <div class="header-title">
-          <span>🛵 骑手端</span>
-        </div>
-        <div class="header-sub warehouse-selector" onclick="Rider.showWarehouseSelector()">
-          <span id="current-warehouse">加载中...</span>
-          <span>▼</span>
-        </div>
-      </div>
-      <div class="header-right">
-        <span class="status-badge" id="online-status">离线</span>
-      </div>
-    </div>
-
-    <div class="tab-bar">
-      <div class="tab-item active" data-tab="orders" onclick="Rider.go('orders')">
-        <span class="tab-icon">📋</span>
-        <span class="tab-label">待配送</span>
-        <span class="tab-badge" id="order-badge"></span>
-      </div>
-      <div class="tab-item" data-tab="delivering" onclick="Rider.go('delivering')">
-        <span class="tab-icon">🚴</span>
-        <span class="tab-label">配送中</span>
-        <span class="tab-badge" id="delivering-badge"></span>
-      </div>
-      <div class="tab-item" data-tab="history" onclick="Rider.go('history')">
-        <span class="tab-icon">✅</span>
-        <span class="tab-label">已完成</span>
-      </div>
-      <div class="tab-item" data-tab="profile" onclick="Rider.go('profile')">
-        <span class="tab-icon">👤</span>
-        <span class="tab-label">我的</span>
-      </div>
-    </div>
-
-    <div id="app-main">
-      <div class="loading">加载中...</div>
-    </div>
+    <div class="loading">加载中...</div>
   </div>
 
-  <script src="js/rider-api.js"></script>
-  <script src="js/rider-app.js"></script>
+  <script src="js/rider-api.js?v=20260706"></script>
+  <script src="js/rider-app.js?v=20260706"></script>
 </body>
 </html>
