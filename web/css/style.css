@@ -107,8 +107,12 @@ input, textarea { font-family: inherit; outline: none; border: none; }
     max-height: 100dvh;
     border-radius: 0;
     box-shadow: none;
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
   }
-  .category-page { height: calc(100dvh - var(--tab-h) - env(safe-area-inset-bottom, 0)); }
+  .tab-bar {
+    margin-bottom: 0;
+  }
+  .category-page { height: calc(100dvh - 60px - max(8px, env(safe-area-inset-bottom))); }
 }
 
 
@@ -138,15 +142,15 @@ input, textarea { font-family: inherit; outline: none; border: none; }
 /* ---------- Bottom Tab Bar ---------- */
 .tab-bar {
   flex-shrink: 0;
-  height: calc(60px + max(8px, env(safe-area-inset-bottom)));
-  min-height: 68px;
+  height: 60px;
+  min-height: 60px;
   background: rgba(255, 255, 255, 0.96);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   box-shadow: var(--shadow-tab);
   display: flex;
   align-items: stretch;
-  padding-bottom: max(8px, env(safe-area-inset-bottom));
+  margin-bottom: max(8px, env(safe-area-inset-bottom));
   z-index: 40;
 }
 
@@ -155,8 +159,7 @@ input, textarea { font-family: inherit; outline: none; border: none; }
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: flex-start;
-  padding-top: 8px;
+  justify-content: center;
   gap: 3px;
   color: var(--color-muted);
   transition: color 0.2s;
@@ -576,7 +579,7 @@ input, textarea { font-family: inherit; outline: none; border: none; }
    ========================================================================== */
 .cart-float {
   position: absolute;
-  bottom: calc(60px + max(8px, env(safe-area-inset-bottom)) + 14px);
+  bottom: calc(60px + 14px);
   left: 16px;
   right: 16px;
   height: 52px;
