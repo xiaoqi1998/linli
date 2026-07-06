@@ -297,7 +297,15 @@ const MemberPage = (function () {
     if (!phone || phone.length < 11) { App.toast('请输入正确的手机号'); return; }
     if (!detail) { App.toast('请输入详细地址'); return; }
 
-    const data = { name, phone, detail, tag, isDefault, latitude, longitude };
+    const data = {
+      contactName: name,
+      contactPhone: phone,
+      detailAddress: detail,
+      tag,
+      isDefault,
+      latitude,
+      longitude,
+    };
     try {
       if (id && id !== '0') {
         await API.updateAddress(id, data);

@@ -9,6 +9,7 @@ const OrderConfirmPage = (function () {
   let coupons = [];
   let selectedCoupon = null;
   let deliveryType = 1; // 1=尽快 2=预约
+  let deliveryTimeSlot = null; // 预约时段, 如 "今天 14:00-14:30"
   let remark = '';
 
   async function render() {
@@ -79,7 +80,7 @@ const OrderConfirmPage = (function () {
           </div>
           <div class="oc-delivery-opt ${deliveryType === 2 ? 'active' : ''}" onclick="OrderConfirmPage.selectDelivery(2)">
             <div class="oc-delivery-opt-title">预约配送</div>
-            <div class="oc-delivery-opt-desc">选择送达时段</div>
+            <div class="oc-delivery-opt-desc">${deliveryTimeSlot || '选择送达时段'}</div>
           </div>
         </div>
       </div>
@@ -206,6 +207,87 @@ const OrderConfirmPage = (function () {
     document.querySelectorAll('.oc-delivery-opt').forEach((el, i) => {
       el.classList.toggle('active', i + 1 === type);
     });
+    // 选择预约配送时弹出时间选择器
+    if (type === 2) {
+      showTimeSlotPicker();
+    }
+  }
+
+  // 生成可选时间段 (30分钟粒度, 今天剩余 + 明天 08:00-22:00)
+  function generateTimeSlots() {
+    const slots = [];
+    const now = new Date();
+    const today = new Date(now);
+    const tomorrow = new Date(now.getTime() + 86400000);
+
+    // 今天: 从下一个 30 分钟整点开始, 到 22:00
+    let t = new Date(today);
+    t.setMinutes(Math.ceil(now.getMinutes() / 30) * 30, 0, 0);
+    if (t <= now) t = new Date(t.getTime() + 30 * 60000);
+    const todayEnd = new Date(today);
+    todayEnd.setHours(22, 0, 0, 0);
+    while (t < todayEnd) {
+      const e = new Date(t.getTime() + 30 * 60000);
+      slots.push({
+        label: '今天',
+        value: `今天 ${fmt(t)}-${fmt(e)}`,
+        text: `${fmt(t)}-${fmt(e)}`,
+      });
+      t = e;
+    }
+
+    // 明天: 08:00-22:00
+    let m = new Date(tomorrow);
+    m.setHours(8, 0, 0, 0);
+    const tomorrowEnd = new Date(tomorrow);
+    tomorrowEnd.setHours(22, 0, 0, 0);
+    while (m < tomorrowEnd) {
+      const e = new Date(m.getTime() + 30 * 60000);
+      slots.push({
+        label: '明天',
+        value: `明天 ${fmt(m)}-${fmt(e)}`,
+        text: `${fmt(m)}-${fmt(e)}`,
+      });
+      m = e;
+    }
+
+    return slots;
+  }
+
+  function fmt(d) {
+    return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  }
+
+  function showTimeSlotPicker() {
+    const slots = generateTimeSlots();
+    if (slots.length === 0) {
+      App.toast('暂无可选时段, 请选择尽快送达');
+      selectDelivery(1);
+      return;
+    }
+    const html = `
+      <div style="padding:0 0 20px;">
+        <div style="padding:12px 16px 8px;font-size:13px;color:var(--color-muted);">选择送达时段 (30分钟粒度)</div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:0 16px;">
+          ${slots.map((s, i) => `
+            <div class="oc-timeslot ${deliveryTimeSlot === s.value ? 'active' : ''}" style="padding:10px 6px;text-align:center;border:1.5px solid ${deliveryTimeSlot === s.value ? 'var(--color-primary)' : 'var(--color-line)'};border-radius:8px;cursor:pointer;font-size:12px;background:${deliveryTimeSlot === s.value ? 'var(--color-primary)' : 'transparent'};color:${deliveryTimeSlot === s.value ? '#fff' : 'inherit'};" onclick="OrderConfirmPage.setTimeSlot('${s.value.replace(/'/g, "\\'")}')">
+              <div style="font-size:10px;opacity:0.8;">${s.label}</div>
+              <div style="font-weight:600;">${s.text}</div>
+            </div>
+          `).join('')}
+        </div>
+        <div style="padding:12px 16px 0;">
+          <button class="btn btn-ghost btn-block" onclick="App.closeSheet()">取消</button>
+        </div>
+      </div>
+    `;
+    App.showSheet('选择送达时段', html);
+  }
+
+  function setTimeSlot(slot) {
+    deliveryTimeSlot = slot;
+    App.closeSheet();
+    App.navigate();
   }
 
   function selectAddress() {
@@ -288,19 +370,25 @@ const OrderConfirmPage = (function () {
       App.toast('请选择商品');
       return;
     }
+    if (deliveryType === 2 && !deliveryTimeSlot) {
+      App.toast('请选择送达时段');
+      showTimeSlotPicker();
+      return;
+    }
 
     const orderData = {
       items: items.map(i => ({
-        skuId: i.id,
+        skuId: i.skuId || i.id,
         quantity: i.quantity,
         specId: i.specId || i.skuSpecId || (i.spec && typeof i.spec === 'object' ? i.spec.id : null) || null,
       })),
       addressId: address.id,
       deliveryTimeType: deliveryType,
-      deliveryTimeSlot: deliveryType === 1 ? null : '预约配送',
+      deliveryTimeSlot: deliveryType === 1 ? null : deliveryTimeSlot,
       couponId: selectedCoupon ? selectedCoupon.userCouponId : null,
       remark: remark,
-      cartItemIds: items.map(i => i.cartItemId).filter(Boolean),
+      // 购物车模式传 cart_items.id 用于清空; 立即购买模式不传
+      cartItemIds: App.state.buyNowItem ? [] : items.map(i => i.id).filter(Boolean),
     };
 
     try {
@@ -341,5 +429,5 @@ const OrderConfirmPage = (function () {
     }
   }
 
-  return { render, selectDelivery, selectAddress, setAddress, selectCoupon, setCoupon, setRemark, submit };
+  return { render, selectDelivery, selectAddress, setAddress, selectCoupon, setCoupon, setRemark, setTimeSlot, submit };
 })();

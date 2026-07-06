@@ -453,6 +453,30 @@ const API = (function () {
     };
   }
 
+  // ---- Coupon transformer (API → frontend) ----
+  function transformCoupon(c) {
+    if (!c) return c;
+    const minOrder = c.minOrderAmount !== undefined ? c.minOrderAmount : (c.min_order_amount || 0);
+    const type = c.type;
+    let desc = '';
+    if (type === 1) desc = `满${minOrder}元可用`;
+    else if (type === 2) desc = `满${minOrder}元可享折扣`;
+    else if (type === 3) desc = '免配送费';
+    return {
+      ...c,
+      id: c.id,
+      userCouponId: c.id, // 前端用 userCouponId 作为选择标识
+      couponId: c.couponId || c.coupon_id,
+      name: c.name,
+      type,
+      faceValue: c.faceValue !== undefined ? c.faceValue : (c.face_value || 0),
+      minOrder,
+      desc,
+      validEnd: c.validEnd || c.valid_end || '',
+      status: c.status !== undefined ? c.status : 0,
+    };
+  }
+
   // ---- Order status text map ----
   const STATUS_TEXT = { 10: '待付款', 20: '待配送', 30: '配送中', 40: '待确认', 50: '已完成', 99: '已取消' };
 
@@ -506,7 +530,7 @@ const API = (function () {
     loginGuest: () => post('/auth/login-guest', {}),
     getProfile: () => get('/user/profile'),
     updateProfile: (data) => put('/user/profile', data),
-    getMember: () => get('/user/member'),
+    getMember: () => get('/user/profile'),
     getCommunity: () => get('/communities/current'),
     getCategories: () => get('/categories'),
     getProducts: async (params) => {
@@ -554,19 +578,37 @@ const API = (function () {
     locateCommunity: (lat, lng) => get('/products/locate-community?lat=' + lat + '&lng=' + lng),
     getRiderLocation: (orderNo) => get('/orders/' + orderNo + '/rider-location'),
     getAddresses: async () => {
-      const data = await get('/addresses');
+      const data = await get('/user/addresses');
       const list = Array.isArray(data) ? data : (data.list || []);
       return list.map(transformAddress);
     },
-    addAddress: (data) => post('/addresses', data),
-    updateAddress: (id, data) => put('/addresses/' + id, data),
-    deleteAddress: (id) => del('/addresses/' + id),
-    getCoupons: () => get('/coupons'),
-    getAvailableCoupons: () => get('/coupons/available'),
+    addAddress: (data) => post('/user/addresses', data),
+    updateAddress: (id, data) => put('/user/addresses/' + id, data),
+    deleteAddress: (id) => del('/user/addresses/' + id),
+    getCoupons: async () => {
+      const data = await get('/user/coupons');
+      const list = Array.isArray(data) ? data : (data.list || []);
+      return list.map(transformCoupon);
+    },
+    getAvailableCoupons: async () => {
+      const data = await get('/user/coupons?status=0');
+      const list = Array.isArray(data) ? data : (data.list || []);
+      return list.map(transformCoupon);
+    },
     getGroupBuys: () => get('/group-buys'),
     getGroupBuy: (id) => get('/group-buys/' + id),
     joinGroupBuy: (id, addressId) => post('/group-buys/' + id + '/join', { addressId }),
-    getPoints: () => get('/user/points'),
+    getPoints: async () => {
+      const data = await get('/user/points');
+      return {
+        points: data.points || 0,
+        history: (data.list || []).map(t => ({
+          desc: t.remark || '',
+          time: t.created_at || '',
+          amount: t.points || 0,
+        })),
+      };
+    },
 
     // Expose mock data for direct use
     mock: { CATEGORIES, PRODUCTS, BANNERS, GROUP_BUYS, ORDERS, COUPONS, ADDRESSES, USER, COMMUNITY, REVIEWS },

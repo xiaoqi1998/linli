@@ -140,11 +140,12 @@ router.get('/:id', (req, res) => {
   const gb = db.prepare(`
     SELECT gb.*, s.name as sku_name, s.main_image, s.subtitle, s.unit,
            s.market_price, s.sale_price, s.origin,
-           l.name as leader_name, l.avatar_url as leader_avatar,
+           l.name as leader_name, u.avatar_url as leader_avatar,
            c.name as community_name
     FROM group_buy gb
     INNER JOIN sku s ON s.id = gb.sku_id
     INNER JOIN leader l ON l.id = gb.leader_id
+    LEFT JOIN user u ON u.id = l.user_id
     INNER JOIN community c ON c.id = gb.community_id
     WHERE gb.id = ?
   `).get(gbId);

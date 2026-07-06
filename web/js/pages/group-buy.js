@@ -114,7 +114,7 @@ const GroupBuyPage = (function () {
       try {
         const addresses = await API.getAddresses();
         const list = Array.isArray(addresses) ? addresses : (addresses.list || []);
-        const defaultAddr = list.find(a => a.is_default) || list[0];
+        const defaultAddr = list.find(a => a.isDefault) || list[0];
         if (!defaultAddr) {
           App.toast('请先添加收货地址');
           setTimeout(() => App.go('address'), 1000);
