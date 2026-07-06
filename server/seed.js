@@ -28,43 +28,150 @@ const TABLES_TO_CLEAR = [
 ];
 
 console.log('清空旧数据...');
+// foreign_keys pragma 不能在事务内修改, 必须在事务外设置
+db.pragma('foreign_keys = OFF');
 const clearAll = db.transaction(() => {
-  db.pragma('foreign_keys = OFF');
   for (const table of TABLES_TO_CLEAR) db.exec(`DELETE FROM ${table};`);
   for (const table of TABLES_TO_CLEAR) {
     const clean = table.replace(/"/g, '');
     db.exec(`DELETE FROM sqlite_sequence WHERE name='${clean}';`);
   }
-  db.pragma('foreign_keys = ON');
 });
 clearAll();
+db.pragma('foreign_keys = ON');
 
 console.log('开始插入演示数据...');
 
 const seed = db.transaction(() => {
   // ========================================================================
-  // 1. 城市 + 社区 + 前置仓 + 覆盖
+  // 1. 城市 + 社区 + 前置仓(网点) + 覆盖
+  //    12个城市, 20个网点, 20个社区 — 覆盖全国主要区域用于按1000公里划分
   // ========================================================================
-  db.prepare(`INSERT INTO city (id, name, code, latitude, longitude, status) VALUES (1, '深圳', '0755', 22.5431, 113.9465, 1)`).run();
-  db.prepare(`INSERT INTO community (id, city_id, name, address, latitude, longitude, household_count, leader_id, status) VALUES (1, 1, '阳光小区', '深圳市南山区阳光小区', 22.5431, 113.9465, 1500, 1, 1)`).run();
-  db.prepare(`INSERT INTO community (id, city_id, name, address, latitude, longitude, household_count, leader_id, status) VALUES (2, 1, '翠海花园', '深圳市南山区翠海花园', 22.5360, 113.9420, 1200, 2, 1)`).run();
-  db.prepare(`INSERT INTO warehouse (id, city_id, name, address, latitude, longitude, radius, status) VALUES (1, 1, '南山前置仓', '深圳市南山区科技园路1号', 22.5400, 113.9450, 3.0, 1)`).run();
-  db.prepare(`INSERT INTO warehouse (id, city_id, name, address, latitude, longitude, radius, status) VALUES (2, 1, '福田前置仓', '深圳市福田区深南大道88号', 22.5330, 113.9400, 3.0, 1)`).run();
-  db.prepare(`INSERT INTO warehouse_coverage (warehouse_id, community_id) VALUES (1,1),(1,2),(2,2)`).run();
+  // 城市 [id, name, code, lat, lng]
+  const CITIES = [
+    [1, '深圳', '0755', 22.5431, 113.9465],
+    [2, '广州', '020',  23.1291, 113.2644],
+    [3, '北京', '010',  39.9042, 116.4074],
+    [4, '上海', '021',  31.2304, 121.4737],
+    [5, '杭州', '0571', 30.2741, 120.1551],
+    [6, '成都', '028',  30.5728, 104.0668],
+    [7, '武汉', '027',  30.5928, 114.3055],
+    [8, '重庆', '023',  29.5630, 106.5516],
+    [9, '西安', '029',  34.3416, 108.9398],
+    [10,'南京', '025',  32.0603, 118.7969],
+    [11,'苏州', '0512', 31.2989, 120.5853],
+    [12,'长沙', '0731', 28.2282, 112.9388],
+  ];
+  const insertCity = db.prepare(`INSERT INTO city (id, name, code, latitude, longitude, status) VALUES (?, ?, ?, ?, ?, 1)`);
+  for (const c of CITIES) insertCity.run(...c);
+
+  // 网点(前置仓) [id, city_id, name, address, lat, lng, radius]
+  const WAREHOUSES = [
+    [1, 1,  '南山前置仓', '深圳市南山区科技园路1号',      22.5400, 113.9450, 3.0],
+    [2, 1,  '福田前置仓', '深圳市福田区深南大道88号',     22.5330, 113.9400, 3.0],
+    [3, 2,  '天河前置仓', '广州市天河区天河路208号',       23.1370, 113.3310, 3.0],
+    [4, 2,  '海珠前置仓', '广州市海珠区江南大道中188号',   23.0830, 113.2620, 3.0],
+    [5, 3,  '朝阳前置仓', '北京市朝阳区建国路88号',        39.9080, 116.4550, 3.0],
+    [6, 3,  '海淀前置仓', '北京市海淀区中关村大街1号',     39.9840, 116.3070, 3.0],
+    [7, 3,  '丰台前置仓', '北京市丰台区南三环西路6号',     39.8380, 116.2870, 3.0],
+    [8, 4,  '浦东前置仓', '上海市浦东新区张江路100号',     31.2040, 121.6050, 3.0],
+    [9, 4,  '徐汇前置仓', '上海市徐汇区漕溪北路88号',     31.1950, 121.4370, 3.0],
+    [10,5,  '西湖前置仓', '杭州市西湖区文三路50号',        30.2760, 120.1340, 3.0],
+    [11,5,  '滨江前置仓', '杭州市滨江区江南大道588号',     30.2080, 120.2070, 3.0],
+    [12,6,  '锦江前置仓', '成都市锦江区春熙路30号',       30.6580, 104.0820, 3.0],
+    [13,6,  '高新前置仓', '成都市高新区天府大道北段1号',   30.5750, 104.0720, 3.0],
+    [14,7,  '武昌前置仓', '武汉市武昌区中南路99号',       30.5440, 114.3160, 3.0],
+    [15,7,  '光谷前置仓', '武汉市洪山区珞喻路100号',      30.5110, 114.4050, 3.0],
+    [16,8,  '渝中前置仓', '重庆市渝中区解放碑民权路20号',  29.5550, 106.5780, 3.0],
+    [17,9,  '雁塔前置仓', '西安市雁塔区小寨西路12号',     34.2310, 108.9270, 3.0],
+    [18,10, '鼓楼前置仓', '南京市鼓楼区中山北路200号',    32.0660, 118.7780, 3.0],
+    [19,11, '工业园前置仓','苏州市工业园区星海街88号',     31.3170, 120.6280, 3.0],
+    [20,12, '岳麓前置仓', '长沙市岳麓区麓山南路1号',      28.1870, 112.9470, 3.0],
+  ];
+  const insertWh = db.prepare(`INSERT INTO warehouse (id, city_id, name, address, latitude, longitude, radius, status) VALUES (?, ?, ?, ?, ?, ?, ?, 1)`);
+  for (const w of WAREHOUSES) insertWh.run(...w);
+
+  // 社区 [id, city_id, name, address, lat, lng, household_count, leader_id]
+  const COMMUNITIES = [
+    [1, 1,  '阳光小区',        '深圳市南山区阳光小区',        22.5431, 113.9465, 1500, 1],
+    [2, 1,  '翠海花园',        '深圳市南山区翠海花园',        22.5360, 113.9420, 1200, 2],
+    [3, 2,  '珠江花城',        '广州市天河区珠江花城',        23.1400, 113.3380, 1800, 3],
+    [4, 2,  '滨江东花园',      '广州市海珠区滨江东花园',      23.0900, 113.2680, 950,  4],
+    [5, 3,  '国贸公寓',        '北京市朝阳区国贸公寓',        39.9100, 116.4600, 1300, 5],
+    [6, 3,  '中关村小区',      '北京市海淀区中关村小区',      39.9860, 116.3120, 1600, 6],
+    [7, 3,  '方庄社区',        '北京市丰台区方庄社区',        39.8420, 116.2920, 1100, 7],
+    [8, 4,  '张江汤臣豪园',    '上海市浦东新区张江汤臣豪园',  31.2060, 121.6080, 1400, 8],
+    [9, 4,  '徐汇苑',          '上海市徐汇区徐汇苑',          31.1970, 121.4400, 1250, 9],
+    [10,5,  '文三新村',        '杭州市西湖区文三新村',        30.2780, 120.1370, 1000, 10],
+    [11,5,  '江南文园',        '杭州市滨江区江南文园',        30.2100, 120.2100, 1350, 11],
+    [12,6,  '春熙路社区',      '成都市锦江区春熙路社区',      30.6600, 104.0850, 1500, 12],
+    [13,6,  '天府软件园社区',  '成都市高新区天府软件园社区',  30.5770, 104.0750, 1700, 13],
+    [14,7,  '中南花园',        '武汉市武昌区中南花园',        30.5460, 114.3190, 1150, 14],
+    [15,7,  '光谷青年社区',    '武汉市洪山区光谷青年社区',    30.5130, 114.4080, 1800, 15],
+    [16,8,  '解放碑社区',      '重庆市渝中区解放碑社区',      29.5570, 106.5810, 1200, 16],
+    [17,9,  '小寨社区',        '西安市雁塔区小寨社区',        34.2330, 108.9300, 1000, 17],
+    [18,10, '鼓楼花园',        '南京市鼓楼区鼓楼花园',        32.0680, 118.7810, 1300, 18],
+    [19,11, '星海花园',        '苏州市工业园区星海花园',      31.3190, 120.6310, 1100, 19],
+    [20,12, '岳麓山社区',      '长沙市岳麓区岳麓山社区',      28.1890, 112.9500, 1250, 20],
+  ];
+  const insertComm = db.prepare(`INSERT INTO community (id, city_id, name, address, latitude, longitude, household_count, leader_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`);
+  for (const c of COMMUNITIES) insertComm.run(...c);
+
+  // 仓库覆盖关系 (社区 -> 网点)
+  const COVERAGE = [
+    [1,1],[1,2],[2,2],   // 深圳南山仓覆盖社区1,2; 福田仓覆盖社区2
+    [3,3],[4,4],         // 广州
+    [5,5],[6,6],[7,7],   // 北京
+    [8,8],[9,9],         // 上海
+    [10,10],[11,11],     // 杭州
+    [12,12],[13,13],     // 成都
+    [14,14],[15,15],     // 武汉
+    [16,16],[17,17],     // 重庆、西安
+    [18,18],[19,19],[20,20], // 南京、苏州、长沙
+  ];
+  const insertCov = db.prepare(`INSERT INTO warehouse_coverage (warehouse_id, community_id) VALUES (?, ?)`);
+  for (const [wid, cid] of COVERAGE) insertCov.run(wid, cid);
 
   // ========================================================================
-  // 2. 用户 (5个)
+  // 2. 用户 (24个: 5个原始用户 + 18个团长用户 + 1个代付测试用户)
   // ========================================================================
   const defaultPwdHash = bcrypt.hashSync('123456', 10);
   const insertUser = db.prepare(`
     INSERT INTO user (id, phone, password_hash, nick_name, avatar_url, member_level, total_consume, order_count, points, source, status)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
   `);
+  // 原始5个用户
   insertUser.run(1, '13800138000', defaultPwdHash, '小邻', img('头像'), 2,  628.50, 12, 628, 'search');
   insertUser.run(2, '13800138001', defaultPwdHash, '王团长', img('王团长'), 3, 1520.00, 42, 1520, 'share');
   insertUser.run(3, '13800138002', defaultPwdHash, '李团长', img('李团长'), 3,  980.00, 28,  980, 'share');
   insertUser.run(4, '13800138003', defaultPwdHash, '张阿姨', img('张阿姨'), 2,  445.00,  8,  445, 'search');
   insertUser.run(5, '13800138004', defaultPwdHash, '陈先生', img('陈先生'), 1,  128.00,  3,  128, 'group');
+  // 新增团长用户 (id 6-23) — 对应社区3-20的团长
+  const NEW_LEADER_USERS = [
+    [6,  '13800138005', '周强',   'share'],
+    [7,  '13800138006', '吴敏',   'share'],
+    [8,  '13800138007', '郑伟',   'share'],
+    [9,  '13800138008', '王芳',   'search'],
+    [10, '13800138009', '刘洋',   'search'],
+    [11, '13800138010', '陈静',   'share'],
+    [12, '13800138011', '杨帆',   'share'],
+    [13, '13800138012', '赵磊',   'search'],
+    [14, '13800138013', '黄丽',   'share'],
+    [15, '13800138014', '周涛',   'search'],
+    [16, '13800138015', '吴婷',   'share'],
+    [17, '13800138016', '郑浩',   'search'],
+    [18, '13800138017', '孙磊',   'share'],
+    [19, '13800138018', '马超',   'search'],
+    [20, '13800138019', '朱琳',   'share'],
+    [21, '13800138020', '胡斌',   'search'],
+    [22, '13800138021', '林燕',   'share'],
+    [23, '13800138022', '郭峰',   'search'],
+  ];
+  for (const [id, phone, name, source] of NEW_LEADER_USERS) {
+    insertUser.run(id, phone, defaultPwdHash, name, img(name), 1 + (id % 3), (id * 37.5).toFixed(2), id % 12, id * 30, source);
+  }
+  // 代付测试用户 (子女代付场景)
+  insertUser.run(24, '13800138023', defaultPwdHash, '小邻女儿', img('小邻女儿'), 2, 320.00, 6, 320, 'share');
 
   // ========================================================================
   // 3. 地址
@@ -149,48 +256,90 @@ const seed = db.transaction(() => {
   }
 
   // ========================================================================
-  // 7. 社区商品
+  // 7. 社区商品 (所有社区均上架全部商品, 推荐与热销按分类轮换)
   // ========================================================================
   const insertCommSku = db.prepare(`INSERT INTO community_sku (community_id, sku_id, is_recommend, is_hot, sort_order) VALUES (?, ?, ?, ?, ?)`);
-  for (const s of skus) {
-    const [id, , , , , , , , , , , , , sales] = s;
-    insertCommSku.run(1, id, id <= 4 ? 1 : 0, sales > 400 ? 1 : 0, id);
-    insertCommSku.run(2, id, id >= 5 && id <= 8 ? 1 : 0, sales > 400 ? 1 : 0, id);
+  for (const comm of COMMUNITIES) {
+    const commId = comm[0];
+    for (const s of skus) {
+      const [id, catId, , , , , , , , , , , , sales] = s;
+      // 每个社区推荐不同分类的商品, 热销按销量阈值
+      const isRec = (commId % 8) + 1 === catId ? 1 : 0;
+      const isHot = sales > 400 ? 1 : 0;
+      insertCommSku.run(commId, id, isRec, isHot, id);
+    }
   }
 
   // ========================================================================
-  // 8. 库存
+  // 8. 库存 (所有网点均需库存)
   // ========================================================================
   const insertInv = db.prepare(`INSERT INTO inventory (warehouse_id, sku_id, available_stock, locked_stock, warning_threshold) VALUES (?, ?, ?, ?, ?)`);
-  for (const s of skus) {
-    const [id] = s;
-    const stock = id === 3 || id === 12 || id === 15 ? 0 : Math.floor(Math.random() * 150) + 30;
-    insertInv.run(1, id, stock, 0, 20);
-  }
-  for (let i = 1; i <= 15; i++) {
-    insertInv.run(2, i, Math.floor(Math.random() * 100) + 20, 0, 20);
+  for (const wh of WAREHOUSES) {
+    const whId = wh[0];
+    for (const s of skus) {
+      const [id] = s;
+      // 部分网点部分商品缺货 (更真实)
+      const oos = (whId + id) % 7 === 0;
+      const stock = oos ? 0 : Math.floor(Math.random() * 150) + 30;
+      insertInv.run(whId, id, stock, 0, 20);
+    }
   }
 
   // ========================================================================
-  // 9. 团长
+  // 9. 团长 (20个: 每个社区一个团长)
   // ========================================================================
-  db.prepare(`INSERT INTO leader (id, user_id, name, phone, community_id, commission_rate, total_commission, withdrawable_commission, withdrawn_commission, status)
-    VALUES (1, 2, '王团长', '13800138001', 1, 10.00, 1520.00, 380.50, 1139.50, 1)`).run();
-  db.prepare(`INSERT INTO leader (id, user_id, name, phone, community_id, commission_rate, total_commission, withdrawable_commission, withdrawn_commission, status)
-    VALUES (2, 3, '李团长', '13800138002', 2, 8.00, 980.00, 245.00, 735.00, 1)`).run();
+  // [id, user_id, name, phone, community_id, commission_rate, total_commission, withdrawable, withdrawn]
+  const LEADERS = [
+    [1, 2,  '王团长', '13800138001', 1,  10.00, 1520.00, 380.50, 1139.50],
+    [2, 3,  '李团长', '13800138002', 2,  8.00,   980.00, 245.00,  735.00],
+    [3, 6,  '周强',   '13800138005', 3,  9.00,   680.00, 180.00,  500.00],
+    [4, 7,  '吴敏',   '13800138006', 4,  8.00,   520.00, 130.00,  390.00],
+    [5, 8,  '郑伟',   '13800138007', 5,  10.00,  890.00, 220.00,  670.00],
+    [6, 9,  '王芳',   '13800138008', 6,  8.00,   450.00, 120.00,  330.00],
+    [7, 10, '刘洋',   '13800138009', 7,  9.00,   380.00,  95.00,  285.00],
+    [8, 11, '陈静',   '13800138010', 8,  10.00,  720.00, 200.00,  520.00],
+    [9, 12, '杨帆',   '13800138011', 9,  8.00,   410.00, 110.00,  300.00],
+    [10,13, '赵磊',   '13800138012', 10, 9.00,   560.00, 150.00,  410.00],
+    [11,14, '黄丽',   '13800138013', 11, 8.00,   330.00,  85.00,  245.00],
+    [12,15, '周涛',   '13800138014', 12, 10.00,  610.00, 165.00,  445.00],
+    [13,16, '吴婷',   '13800138015', 13, 9.00,   470.00, 125.00,  345.00],
+    [14,17, '郑浩',   '13800138016', 14, 8.00,   390.00, 100.00,  290.00],
+    [15,18, '孙磊',   '13800138017', 15, 10.00,  650.00, 175.00,  475.00],
+    [16,19, '马超',   '13800138018', 16, 8.00,   350.00,  90.00,  260.00],
+    [17,20, '朱琳',   '13800138019', 17, 9.00,   280.00,  70.00,  210.00],
+    [18,21, '胡斌',   '13800138020', 18, 10.00,  510.00, 140.00,  370.00],
+    [19,22, '林燕',   '13800138021', 19, 8.00,   420.00, 115.00,  305.00],
+    [20,23, '郭峰',   '13800138022', 20, 9.00,   360.00,  95.00,  265.00],
+  ];
+  const insertLeader = db.prepare(`INSERT INTO leader (id, user_id, name, phone, community_id, commission_rate, total_commission, withdrawable_commission, withdrawn_commission, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`);
+  for (const l of LEADERS) insertLeader.run(...l);
 
   // ========================================================================
-  // 10. 骑手 (4个)
+  // 10. 骑手 (40个: 每个网点2个骑手)
   // ========================================================================
+  const RIDER_NAMES = ['张骑手','陈骑手','刘骑手','赵骑手','孙骑手','周骑手','吴骑手','郑骑手',
+    '王骑手','李骑手','冯骑手','陈骑手','褚骑手','卫骑手','蒋骑手','沈骑手',
+    '韩骑手','杨骑手','朱骑手','秦骑手','尤骑手','许骑手','何骑手','吕骑手',
+    '施骑手','黄骑手','梁骑手','宋骑手','唐骑手','薛骑手','雷骑手','贺骑手',
+    '倪骑手','汤骑手','滕骑手','殷骑手','罗骑手','毕骑手','郝骑手','邬骑手'];
   const insertRider = db.prepare(`
     INSERT INTO rider (id, name, phone, warehouse_id, status, lat, lng, current_orders, location_updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const n = now();
-  insertRider.run(1, '张骑手', '13900139001', 1, 1, 22.5410, 113.9455, 0, n);
-  insertRider.run(2, '陈骑手', '13900139002', 1, 1, 22.5390, 113.9470, 1, n);
-  insertRider.run(3, '刘骑手', '13900139003', 2, 1, 22.5340, 113.9410, 0, n);
-  insertRider.run(4, '赵骑手', '13900139004', 1, 1, 22.5380, 113.9440, 2, n);
+  let riderId = 1;
+  for (const wh of WAREHOUSES) {
+    const [whId, , , , whLat, whLng] = wh;
+    for (let r = 0; r < 2; r++) {
+      const name = RIDER_NAMES[(riderId - 1) % RIDER_NAMES.length];
+      const phone = '139' + String(130000 + riderId).padStart(6, '0');
+      // 骑手位置在网点附近小幅偏移
+      const lat = whLat + (Math.random() - 0.5) * 0.008;
+      const lng = whLng + (Math.random() - 0.5) * 0.008;
+      insertRider.run(riderId, name, phone, whId, 1, lat, lng, riderId % 3, n);
+      riderId++;
+    }
+  }
 
   // ========================================================================
   // 11. 优惠券 (8张)

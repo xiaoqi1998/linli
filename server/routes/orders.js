@@ -160,10 +160,17 @@ router.post('/', (req, res) => {
     return error(res, '收货地址不存在', 404);
   }
 
-  // 获取用户所属社区的前置仓
-  const community = db.prepare(`SELECT id FROM community WHERE leader_id IN (SELECT id FROM leader WHERE user_id = ?) LIMIT 1`).get(req.userId);
-  const communityId = community ? community.id : 1;
-  const warehouse = db.prepare(`SELECT * FROM warehouse_coverage WHERE community_id = ? LIMIT 1`).get(communityId);
+  // 获取用户所属社区: 优先请求体 → 购物车 → 默认 1
+  let communityId = req.body.communityId;
+  if (!communityId) {
+    const cartItem = db.prepare(`SELECT community_id FROM cart_items WHERE user_id = ? AND community_id IS NOT NULL ORDER BY id DESC LIMIT 1`).get(req.userId);
+    communityId = cartItem?.community_id || 1;
+  }
+  // 查询社区对应的团长和前置仓
+  const community = db.prepare(`SELECT id, leader_id FROM community WHERE id = ?`).get(communityId);
+  const communityIdFinal = community ? community.id : 1;
+  const leaderId = community?.leader_id || null;
+  const warehouse = db.prepare(`SELECT * FROM warehouse_coverage WHERE community_id = ? LIMIT 1`).get(communityIdFinal);
   const warehouseId = warehouse ? warehouse.warehouse_id : 1;
 
   // 计算订单金额
@@ -201,22 +208,46 @@ router.post('/', (req, res) => {
 
   // 优惠券
   let couponDiscount = 0;
+  let actualDeliveryFee = deliveryFee;
   if (couponId) {
     const uc = db.prepare(`SELECT uc.*, c.* FROM user_coupon uc JOIN coupon c ON uc.coupon_id = c.id WHERE uc.id = ? AND uc.user_id = ? AND uc.status = 0`).get(couponId, req.userId);
-    if (uc && skuTotal >= uc.min_order_amount) {
-      if (uc.type === 1) couponDiscount = uc.face_value;
-      else if (uc.type === 2) couponDiscount = skuTotal * (1 - uc.face_value);
-      else if (uc.type === 3) couponDiscount = 0; // 免配送费在 deliveryFee 层处理
+    if (!uc) {
+      return error(res, '优惠券不存在或已使用', 400);
+    }
+    // 校验有效期 (valid_end 可能是 'YYYY-MM-DD HH:MM:SS' 格式, 兼容 ISO)
+    const nowDate = new Date();
+    const parseDate = (s) => s ? new Date(typeof s === 'string' ? s.replace(' ', 'T') : s) : null;
+    const vEnd = parseDate(uc.valid_end);
+    const vStart = parseDate(uc.valid_start);
+    if (vEnd && vEnd < nowDate) {
+      return error(res, '优惠券已过期', 400);
+    }
+    if (vStart && vStart > nowDate) {
+      return error(res, '优惠券尚未生效', 400);
+    }
+    // 校验最低消费
+    if (skuTotal < uc.min_order_amount) {
+      return error(res, `优惠券需满 ${uc.min_order_amount} 元可用`, 400);
+    }
+    if (uc.type === 1) {
+      // 满减券
+      couponDiscount = uc.face_value;
+    } else if (uc.type === 2) {
+      // 折扣券 (face_value 是折扣率, 如 0.9 表示 9 折)
+      couponDiscount = parseFloat((skuTotal * (1 - uc.face_value)).toFixed(2));
+    } else if (uc.type === 3) {
+      // 免配送费: 实际免掉配送费
+      actualDeliveryFee = 0;
     }
   }
 
-  const payAmount = skuTotal + deliveryFee - couponDiscount;
+  const payAmount = skuTotal + actualDeliveryFee - couponDiscount;
   const orderNo = 'O' + new Date().toISOString().replace(/[-T:.Z]/g, '').substring(0, 14) + Math.floor(Math.random() * 10000).toString().padStart(4, '0');
   const expireAt = new Date(Date.now() + 15 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
 
   const insertOrder = db.prepare(`
-    INSERT INTO \`order\` (order_no, user_id, community_id, warehouse_id, address_id, address_snapshot, status, delivery_type, delivery_time_type, delivery_time_slot, delivery_fee, sku_total_amount, discount_amount, coupon_id, coupon_discount, pay_amount, remark, pay_status, source, expire_at)
-    VALUES (?, ?, ?, ?, ?, ?, 10, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'normal', ?)
+    INSERT INTO \`order\` (order_no, user_id, community_id, warehouse_id, leader_id, address_id, address_snapshot, status, delivery_type, delivery_time_type, delivery_time_slot, delivery_fee, sku_total_amount, discount_amount, coupon_id, coupon_discount, pay_amount, remark, pay_status, source, expire_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 10, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'normal', ?)
   `);
 
   const insertItem = db.prepare(`
@@ -232,8 +263,8 @@ router.post('/', (req, res) => {
   const clearCart = db.prepare(`DELETE FROM cart_items WHERE id = ? AND user_id = ?`);
 
   const txn = db.transaction(() => {
-    const addressSnapshot = JSON.stringify({ name: address.contact_name, phone: address.contact_phone, detail: address.detail_address });
-    const result = insertOrder.run(orderNo, req.userId, communityId, warehouseId, addressId, addressSnapshot, deliveryTimeType, deliveryTimeSlot, deliveryFee, skuTotal, couponDiscount, couponId, couponDiscount, payAmount, remark, expireAt);
+    const addressSnapshot = JSON.stringify({ name: address.contact_name, phone: address.contact_phone, detail: address.detail_address, latitude: address.latitude, longitude: address.longitude });
+    const result = insertOrder.run(orderNo, req.userId, communityIdFinal, warehouseId, leaderId, addressId, addressSnapshot, deliveryTimeType, deliveryTimeSlot, actualDeliveryFee, skuTotal, couponDiscount, couponId, couponDiscount, payAmount, remark, expireAt);
     const orderId = result.lastInsertRowid;
 
     for (const oi of orderItems) {
@@ -374,7 +405,18 @@ router.post('/:orderNo/pay', (req, res) => {
   }
 
   // 演示模式: 支付成功后 3 秒自动模拟配送全流程 (20→30→40→50)
-  simulateDeliveryFlow(order.id);
+  // 拼团订单需等成团后才配送; 普通订单立即配送
+  if (order.group_buy_id) {
+    // 检查拼团是否已成团
+    const gb = db.prepare(`SELECT status FROM group_buy WHERE id = ?`).get(order.group_buy_id);
+    if (gb && gb.status === 2) {
+      simulateDeliveryFlow(order.id);
+    } else {
+      createMessage(order.user_id, 'order_paid', '支付成功', `订单 ${order.order_no} 支付成功，拼团未成团，待成团后配送`, order.id);
+    }
+  } else {
+    simulateDeliveryFlow(order.id);
+  }
 
   const updated = db.prepare(`SELECT * FROM \`order\` WHERE id = ?`).get(order.id);
   return success(res, { ...mapOrder(updated), paySuccess: true }, '支付成功');
@@ -402,9 +444,9 @@ router.post('/:orderNo/cancel', (req, res) => {
     db.prepare(`UPDATE \`order\` SET status = 99, cancel_time = ?, cancel_reason = ? WHERE id = ?`)
       .run(nowStr, req.body.reason || '用户取消', order.id);
 
-    // 释放库存
+    // 释放库存 (locked_stock 不能小于 0)
     const items = db.prepare(`SELECT * FROM order_item WHERE order_id = ?`).all(order.id);
-    const updateInv = db.prepare(`UPDATE inventory SET locked_stock = locked_stock - ?, available_stock = available_stock + ? WHERE warehouse_id = ? AND sku_id = ?`);
+    const updateInv = db.prepare(`UPDATE inventory SET locked_stock = MAX(0, locked_stock - ?), available_stock = available_stock + ? WHERE warehouse_id = ? AND sku_id = ?`);
     for (const item of items) {
       updateInv.run(item.quantity, item.quantity, order.warehouse_id, item.sku_id);
     }
@@ -412,6 +454,14 @@ router.post('/:orderNo/cancel', (req, res) => {
     // 返还优惠券
     if (order.coupon_id) {
       db.prepare(`UPDATE user_coupon SET status = 0, used_order_id = NULL WHERE id = ?`).run(order.coupon_id);
+    }
+
+    // 拼团订单: 回退 joined_count + 标记 participant 失效
+    if (order.group_buy_id) {
+      db.prepare(`UPDATE group_buy SET joined_count = MAX(0, joined_count - 1), updated_at = ? WHERE id = ? AND status = 1`)
+        .run(nowStr, order.group_buy_id);
+      db.prepare(`UPDATE group_buy_participant SET status = 0 WHERE order_id = ?`)
+        .run(order.id);
     }
 
     // 订单状态日志

@@ -4,6 +4,7 @@ const db = require('../db');
 const { success, error, generateOrderNo, now, minutesFromNow } = require('../helpers');
 const authMiddleware = require('../middleware/auth');
 const { createMessage } = require('./messages');
+const { simulateDeliveryFlow } = require('../delivery-simulator');
 
 /**
  * GET /api/v1/group-buys
@@ -195,11 +196,11 @@ router.get('/:id', (req, res) => {
 /**
  * POST /api/v1/group-buys/:id/join
  * 参加拼团 (需要登录)
- * Body: { skuSpecId?, quantity? }
+ * Body: { skuSpecId?, addressId? }
  */
 router.post('/:id/join', authMiddleware, (req, res) => {
   const gbId = parseInt(req.params.id);
-  const { skuSpecId } = req.body;
+  const { skuSpecId, addressId } = req.body;
 
   const gb = db.prepare(`
     SELECT gb.*, s.name as sku_name, s.main_image, s.sale_price, s.unit,
@@ -245,10 +246,32 @@ router.post('/:id/join', authMiddleware, (req, res) => {
     return error(res, '商品库存不足', 409);
   }
 
+  // 校验收货地址: 优先使用指定地址, 否则用默认地址
+  let address = null;
+  if (addressId) {
+    address = db.prepare(`SELECT * FROM user_address WHERE id = ? AND user_id = ?`).get(addressId, req.userId);
+  }
+  if (!address) {
+    address = db.prepare(`SELECT * FROM user_address WHERE user_id = ? AND is_default = 1 LIMIT 1`).get(req.userId);
+  }
+  if (!address) {
+    address = db.prepare(`SELECT * FROM user_address WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1`).get(req.userId);
+  }
+  if (!address) {
+    return error(res, '请先添加收货地址', 400);
+  }
+
   // 创建拼团订单
   const orderNo = generateOrderNo();
   const orderPrice = gb.group_price;
   const expireAt = minutesFromNow(15);
+  const addressSnapshot = JSON.stringify({
+    name: address.contact_name,
+    phone: address.contact_phone,
+    detail: address.detail_address,
+    latitude: address.latitude,
+    longitude: address.longitude,
+  });
 
   const joinTxn = db.transaction(() => {
     const orderResult = db.prepare(`
@@ -257,10 +280,10 @@ router.post('/:id/join', authMiddleware, (req, res) => {
         address_id, address_snapshot, status, delivery_type,
         delivery_time_type, delivery_fee, sku_total_amount,
         pay_amount, source, group_buy_id, expire_at
-      ) VALUES (?, ?, ?, ?, ?, NULL, ?, 10, 2, 1, 0, ?, ?, 'group_buy', ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 10, 2, 1, 0, ?, ?, 'group_buy', ?, ?)
     `).run(
       orderNo, req.userId, gb.community_id, gb.warehouse_id, gb.leader_id,
-      JSON.stringify({ note: '拼团订单' }),
+      address.id, addressSnapshot,
       orderPrice, orderPrice, gbId, expireAt
     );
 
@@ -294,17 +317,18 @@ router.post('/:id/join', authMiddleware, (req, res) => {
 
     // 更新拼团已参团人数
     db.prepare(`
-      UPDATE group_buy SET joined_count = joined_count + 1, updated_at = datetime('localtime')
+      UPDATE group_buy SET joined_count = joined_count + 1, updated_at = datetime('now')
       WHERE id = ?
     `).run(gbId);
 
     // 检查是否成团
     const updatedGb = db.prepare('SELECT joined_count, target_count FROM group_buy WHERE id = ?').get(gbId);
-    if (updatedGb.joined_count >= updatedGb.target_count) {
-      db.prepare('UPDATE group_buy SET status = 2, updated_at = datetime(\'localtime\') WHERE id = ?').run(gbId);
+    const justSucceeded = updatedGb.joined_count >= updatedGb.target_count;
+    if (justSucceeded) {
+      db.prepare('UPDATE group_buy SET status = 2, updated_at = datetime(\'now\') WHERE id = ?').run(gbId);
 
       // 通知所有参与者成团
-      const participants = db.prepare(`SELECT user_id FROM group_buy_participant WHERE group_buy_id = ? AND status = 1`).all(gbId);
+      const participants = db.prepare(`SELECT user_id, order_id FROM group_buy_participant WHERE group_buy_id = ? AND status = 1`).all(gbId);
       for (const p of participants) {
         createMessage(p.user_id, 'group_buy_success', '拼团成功', `您参与的拼团已成功，请等待配送`, null);
       }
@@ -324,6 +348,23 @@ router.post('/:id/join', authMiddleware, (req, res) => {
     orderId = joinTxn();
   } catch (e) {
     return error(res, e.message || '参团失败', 400);
+  }
+
+  // 成团后: 对所有已支付订单触发配送流程
+  // 拼团订单的支付逻辑: 参团时 status=10, 用户在订单页支付后 status=20
+  // 这里检查成团时, 已支付订单 (status=20) 应该开始配送
+  const updatedGb2 = db.prepare('SELECT joined_count, target_count, status FROM group_buy WHERE id = ?').get(gbId);
+  if (updatedGb2.status === 2) {
+    const paidOrders = db.prepare(`
+      SELECT o.id FROM \`order\` o
+      INNER JOIN group_buy_participant gbp ON gbp.order_id = o.id
+      WHERE gbp.group_buy_id = ? AND gbp.status = 1 AND o.status = 20 AND o.pay_status = 1
+    `).all(gbId);
+    for (const po of paidOrders) {
+      try { simulateDeliveryFlow(po.id); } catch (e) {
+        console.error('[GroupBuy] 成团后触发配送失败:', e.message);
+      }
+    }
   }
 
   const updatedGb = db.prepare('SELECT joined_count, target_count FROM group_buy WHERE id = ?').get(gbId);

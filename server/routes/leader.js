@@ -272,6 +272,11 @@ router.post('/orders/:id/dispatch', (req, res) => {
 
   const nowStr = now();
   const dispatchTxn = db.transaction(() => {
+    // 二次校验: 防止团长派单与骑手接单并发冲突
+    const cur = db.prepare(`SELECT status, rider_id FROM \`order\` WHERE id = ?`).get(orderId);
+    if (!cur || cur.status !== 20) {
+      throw new Error('订单状态已变更');
+    }
     db.prepare(`UPDATE \`order\` SET status = 30, rider_id = ?, rider_accept_time = ? WHERE id = ?`)
       .run(rider.id, nowStr, orderId);
 
@@ -441,27 +446,63 @@ router.post('/refunds/:id/approve', (req, res) => {
   }
 
   const order = db.prepare(`SELECT * FROM \`order\` WHERE id = ?`).get(refund.order_id);
+  if (!order) {
+    return error(res, '订单不存在', 404);
+  }
   const nowStr = now();
 
-  const refundTxn = db.transaction(() => {
-    // 更新退款状态
-    db.prepare(`UPDATE refund SET status = 1, updated_at = ? WHERE id = ?`).run(nowStr, refundId);
+  // 先更新退款申请状态为已同意
+  try {
+    db.prepare(`UPDATE refund SET status = 1, updated_at = ? WHERE id = ? AND status = 0`).run(nowStr, refundId);
+  } catch (e) {
+    return error(res, '更新退款状态失败: ' + e.message, 500);
+  }
 
-    // 订单标记为已取消 (退款)
-    db.prepare(`UPDATE \`order\` SET status = 99, cancel_time = ?, cancel_reason = ? WHERE id = ?`)
+  // 调用统一退款处理 (含库存回补/还原积分/会员等级/消费额/订单状态/退款单/通知)
+  // 注意: processOrderRefund 会再插一条 refund 记录, 这里已经有一条, 所以用 refundStatus=null 跳过
+  // 改为直接调用核心逻辑: 更新订单 + 库存 + 用户 + 日志
+  const items = db.prepare(`SELECT * FROM order_item WHERE order_id = ?`).all(order.id);
+  const earnedPoints = Math.floor(order.pay_amount);
+  const user = db.prepare(`SELECT points, total_consume, member_level, order_count FROM user WHERE id = ?`).get(order.user_id);
+
+  const refundTxn = db.transaction(() => {
+    // 1. 订单标记为已取消 + 已退款
+    db.prepare(`UPDATE \`order\` SET status = 99, pay_status = 2, cancel_time = ?, cancel_reason = ? WHERE id = ?`)
       .run(nowStr, '团长同意退款', order.id);
 
-    // 库存回补
-    const items = db.prepare(`SELECT * FROM order_item WHERE order_id = ?`).all(order.id);
+    // 2. 库存回补
     const updateInv = db.prepare(`UPDATE inventory SET available_stock = available_stock + ? WHERE warehouse_id = ? AND sku_id = ?`);
     for (const item of items) {
       updateInv.run(item.quantity, order.warehouse_id, item.sku_id);
     }
 
+    // 3. 商品销量回退
+    const updateSales = db.prepare(`UPDATE sku SET sales_count = MAX(0, sales_count - ?) WHERE id = ?`);
+    for (const item of items) {
+      updateSales.run(item.quantity, item.sku_id);
+    }
+
+    // 4. 还原用户消费额/订单数/积分/会员等级
+    if (user) {
+      const newPoints = Math.max(0, user.points - earnedPoints);
+      const newTotalConsume = Math.max(0, user.total_consume - order.pay_amount);
+      const newOrderCount = Math.max(0, user.order_count - 1);
+      let newLevel = 1;
+      if (newTotalConsume >= 999) newLevel = 3;
+      else if (newTotalConsume >= 199) newLevel = 2;
+      db.prepare(`UPDATE user SET total_consume = ?, order_count = ?, points = ?, member_level = ? WHERE id = ?`)
+        .run(newTotalConsume, newOrderCount, newPoints, newLevel, order.user_id);
+      if (earnedPoints > 0) {
+        db.prepare(`INSERT INTO point_transaction (user_id, type, points, balance, remark, order_id) VALUES (?, 2, ?, ?, '订单退款扣除', ?)`)
+          .run(order.user_id, -earnedPoints, newPoints, order.id);
+      }
+    }
+
+    // 5. 订单状态日志
     db.prepare(`INSERT INTO order_status_log (order_id, from_status, to_status, operator, remark) VALUES (?, ?, 99, ?, '团长同意退款')`)
       .run(order.id, order.status, 'leader');
 
-    // 通知用户
+    // 6. 通知用户
     createMessage(order.user_id, 'refund_approved', '退款已通过', `订单 ${order.order_no} 的退款申请已通过，退款 ¥${refund.amount.toFixed(2)} 将原路退回`, order.id);
   });
 

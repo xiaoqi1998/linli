@@ -109,9 +109,21 @@ router.post('/orders/:id/accept', (req, res) => {
   if (order.status !== 20) {
     return error(res, '当前订单状态不可接单', 400);
   }
+  // 已分配骑手的订单不可被其他骑手抢接
+  if (order.rider_id && order.rider_id !== rider.id) {
+    return error(res, '该订单已被其他骑手接单', 400);
+  }
 
   const nowStr = now();
   const acceptTxn = db.transaction(() => {
+    // 二次校验: 防止与团长派单/其他骑手接单并发冲突
+    const cur = db.prepare(`SELECT status, rider_id FROM \`order\` WHERE id = ?`).get(orderId);
+    if (!cur || cur.status !== 20) {
+      throw new Error('订单状态已变更');
+    }
+    if (cur.rider_id && cur.rider_id !== rider.id) {
+      throw new Error('该订单已被其他骑手接单');
+    }
     db.prepare(`UPDATE \`order\` SET status = 30, rider_id = ?, rider_accept_time = ? WHERE id = ?`)
       .run(rider.id, nowStr, orderId);
 
@@ -152,6 +164,10 @@ router.post('/orders/:id/deliver', (req, res) => {
   }
   if (order.status !== 30) {
     return error(res, '当前订单状态不可送达', 400);
+  }
+  // 只能送达自己接的订单
+  if (order.rider_id && order.rider_id !== rider.id) {
+    return error(res, '该订单非您配送，不可操作', 400);
   }
 
   const nowStr = now();

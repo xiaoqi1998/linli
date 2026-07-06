@@ -100,6 +100,79 @@ function haversine(lat1, lng1, lat2, lng2) {
 }
 
 /**
+ * GET /api/v1/products/nearby-warehouses
+ * 根据经纬度查询附近网点(前置仓), 按1000公里划分分组
+ * Query: lat, lng
+ * 返回: { groups: [{ label, range, warehouses: [...] }], total }
+ */
+router.get('/nearby-warehouses', (req, res) => {
+  const lat = parseFloat(req.query.lat);
+  const lng = parseFloat(req.query.lng);
+
+  if (isNaN(lat) || isNaN(lng)) {
+    return error(res, '经纬度参数无效', 400);
+  }
+
+  const warehouses = db.prepare(`
+    SELECT w.id, w.name, w.address, w.latitude, w.longitude, w.radius, w.status,
+           c.name as city_name
+    FROM warehouse w
+    INNER JOIN city c ON c.id = w.city_id
+    WHERE w.status = 1 AND w.latitude IS NOT NULL AND w.longitude IS NOT NULL
+    ORDER BY w.id
+  `).all();
+
+  if (warehouses.length === 0) {
+    return success(res, { groups: [], total: 0 }, '暂无网点数据');
+  }
+
+  // 计算每个网点距离并按1000公里(1000000米)划分分组
+  const TIER_KM = 1000; // 每组1000公里
+  const TIER_M = TIER_KM * 1000;
+  const tiers = {}; // tierIndex -> warehouses[]
+
+  for (const w of warehouses) {
+    const distM = haversine(lat, lng, w.latitude, w.longitude);
+    const distKm = distM / 1000;
+    const tierIndex = Math.floor(distKm / TIER_KM);
+    if (!tiers[tierIndex]) tiers[tierIndex] = [];
+    tiers[tierIndex].push({
+      id: w.id,
+      name: w.name,
+      cityName: w.city_name,
+      address: w.address,
+      latitude: w.latitude,
+      longitude: w.longitude,
+      radius: w.radius,
+      distanceKm: Math.round(distKm * 10) / 10, // 保留1位小数
+    });
+  }
+
+  // 构建分组 (按距离从近到远排序)
+  const groups = Object.keys(tiers).map(Number).sort((a, b) => a - b).map(tierIndex => {
+    const ws = tiers[tierIndex].sort((a, b) => a.distanceKm - b.distanceKm);
+    const minKm = tierIndex * TIER_KM;
+    const maxKm = (tierIndex + 1) * TIER_KM;
+    const label = tierIndex === 0
+      ? `${TIER_KM}公里内`
+      : `${minKm}-${maxKm}公里`;
+    return {
+      label,
+      range: [minKm, maxKm],
+      tierIndex,
+      count: ws.length,
+      warehouses: ws,
+    };
+  });
+
+  return success(res, {
+    groups,
+    total: warehouses.length,
+    location: { latitude: lat, longitude: lng },
+  }, `已找到${warehouses.length}个网点, 按${TIER_KM}公里划分为${groups.length}组`);
+});
+
+/**
  * GET /api/v1/products
  * 商品列表 (分页, 按社区和分类筛选)
  * Query: page, pageSize, communityId, categoryId, sort

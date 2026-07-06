@@ -565,7 +565,7 @@ const API = (function () {
     getAvailableCoupons: () => get('/coupons/available'),
     getGroupBuys: () => get('/group-buys'),
     getGroupBuy: (id) => get('/group-buys/' + id),
-    joinGroupBuy: (id) => post('/group-buys/' + id + '/join', {}),
+    joinGroupBuy: (id, addressId) => post('/group-buys/' + id + '/join', { addressId }),
     getPoints: () => get('/user/points'),
 
     // Expose mock data for direct use

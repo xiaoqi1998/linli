@@ -107,10 +107,34 @@ const GroupBuyPage = (function () {
     return html;
   }
 
-  function join(id) {
-    // Demo mode: directly show success and navigate to orders
-    App.toast('参团成功！(演示模式)');
-    setTimeout(() => App.go('orders'), 1200);
+  async function join(id) {
+    try {
+      // 获取用户地址, 优先默认地址
+      let addressId = null;
+      try {
+        const addresses = await API.getAddresses();
+        const list = Array.isArray(addresses) ? addresses : (addresses.list || []);
+        const defaultAddr = list.find(a => a.is_default) || list[0];
+        if (!defaultAddr) {
+          App.toast('请先添加收货地址');
+          setTimeout(() => App.go('address'), 1000);
+          return;
+        }
+        addressId = defaultAddr.id;
+      } catch (e) {
+        App.toast('请先添加收货地址');
+        setTimeout(() => App.go('address'), 1000);
+        return;
+      }
+
+      App.toast('参团中...');
+      const res = await API.joinGroupBuy(id, addressId);
+      App.toast('参团成功, 请尽快支付');
+      setTimeout(() => App.go('orders'), 1200);
+    } catch (err) {
+      const msg = (err && err.message) || '参团失败, 请稍后重试';
+      App.toast(msg);
+    }
   }
 
   return { render, renderDetail, join };

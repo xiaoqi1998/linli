@@ -72,21 +72,28 @@ router.get('/', (req, res) => {
     ORDER BY ci.created_at DESC
   `).all(req.userId, communityId);
 
-  // 获取库存信息
+  // 获取库存信息 (批量查询避免 N+1)
   const warehouse = db.prepare(`
     SELECT wc.warehouse_id FROM warehouse_coverage wc WHERE wc.community_id = ? LIMIT 1
   `).get(communityId);
   const warehouseId = warehouse ? warehouse.warehouse_id : 1;
 
+  // 一次性查询所有相关 SKU 的库存
+  const skuIds = items.map(i => i.sku_id);
+  let invMap = {};
+  if (skuIds.length > 0) {
+    const placeholders = skuIds.map(() => '?').join(',');
+    const invList = db.prepare(`
+      SELECT sku_id, available_stock FROM inventory WHERE warehouse_id = ? AND sku_id IN (${placeholders})
+    `).all(warehouseId, ...skuIds);
+    invMap = Object.fromEntries(invList.map(i => [i.sku_id, i.available_stock]));
+  }
+
   let totalAmount = 0;
   let totalCount = 0;
 
   const cartItems = items.map((item) => {
-    const inv = db.prepare(`
-      SELECT available_stock FROM inventory WHERE warehouse_id = ? AND sku_id = ?
-    `).get(warehouseId, item.sku_id);
-
-    const availableStock = inv ? inv.available_stock : 0;
+    const availableStock = invMap[item.sku_id] ?? 0;
     const price = item.spec_price || item.sale_price;
     const itemTotal = price * item.quantity;
     totalAmount += itemTotal;
