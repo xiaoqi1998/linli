@@ -9,46 +9,122 @@ const Rider = (function () {
   let refreshTimer = null;
 
   async function init() {
+    renderLogin();
+  }
+
+  function renderLogin() {
+    const app = document.getElementById('app');
+    app.innerHTML = `
+      <div class="login-page">
+        <div class="login-logo">🛵</div>
+        <div class="login-title">骑手端</div>
+        <div class="login-subtitle">邻里鲜生 · 配送管理</div>
+        <div class="login-form">
+          <div class="form-group">
+            <input type="tel" id="login-phone" placeholder="请输入手机号" maxlength="11" class="form-input">
+          </div>
+          <div class="form-group">
+            <input type="password" id="login-password" placeholder="请输入密码" class="form-input">
+          </div>
+          <button class="btn btn-primary btn-block" onclick="Rider.doLogin()">登录</button>
+          <button class="btn btn-outline btn-block mt-2" onclick="Rider.doGuestLogin()">体验登录</button>
+        </div>
+        <div class="login-footer">
+          <a href="#" onclick="Rider.toast('功能开发中')" class="link">忘记密码?</a>
+        </div>
+      </div>
+    `;
+    const header = document.getElementById('app-header');
+    if (header) header.style.display = 'none';
+    const tabBar = document.querySelector('.tab-bar');
+    if (tabBar) tabBar.style.display = 'none';
+  }
+
+  async function doLogin() {
+    const phone = document.getElementById('login-phone')?.value;
+    const password = document.getElementById('login-password')?.value;
+    if (!phone) {
+      toast('请输入手机号');
+      return;
+    }
+    if (!password) {
+      toast('请输入密码');
+      return;
+    }
     try {
-      const res = await RiderAPI.loginGuest();
+      await RiderAPI.login(phone);
+      await loadProfile();
+    } catch (e) {
+      toast(e.message || '登录失败');
+    }
+  }
+
+  async function doGuestLogin() {
+    try {
+      await RiderAPI.loginGuest();
+      await loadProfile();
+    } catch (e) {
+      toast(e.message || '体验登录失败');
+    }
+  }
+
+  async function loadProfile() {
+    const main = document.getElementById('app-main');
+    if (main) main.innerHTML = '<div class="loading">登录中...</div>';
+    try {
       const profile = await RiderAPI.getProfile();
       riderInfo = profile.rider;
       warehouses = profile.warehouses || [];
       currentWarehouseId = warehouses.length > 0
         ? (warehouses.find(w => w.is_default)?.id || warehouses[0].id)
         : null;
+      const app = document.getElementById('app');
+      app.innerHTML = `
+        <div id="app-header">
+          <div class="header-left">
+            <div class="header-title">
+              <span>🛵 骑手端</span>
+            </div>
+            <div class="header-sub warehouse-selector" onclick="Rider.showWarehouseSelector()">
+              <span id="current-warehouse">加载中...</span>
+              <span>▼</span>
+            </div>
+          </div>
+          <div class="header-right">
+            <span class="status-badge" id="online-status">离线</span>
+          </div>
+        </div>
+        <div class="tab-bar">
+          <div class="tab-item active" data-tab="orders" onclick="Rider.go('orders')">
+            <span class="tab-icon">📋</span>
+            <span class="tab-label">待配送</span>
+            <span class="tab-badge" id="order-badge"></span>
+          </div>
+          <div class="tab-item" data-tab="delivering" onclick="Rider.go('delivering')">
+            <span class="tab-icon">🚴</span>
+            <span class="tab-label">配送中</span>
+            <span class="tab-badge" id="delivering-badge"></span>
+          </div>
+          <div class="tab-item" data-tab="history" onclick="Rider.go('history')">
+            <span class="tab-icon">✅</span>
+            <span class="tab-label">已完成</span>
+          </div>
+          <div class="tab-item" data-tab="profile" onclick="Rider.go('profile')">
+            <span class="tab-icon">👤</span>
+            <span class="tab-label">我的</span>
+          </div>
+        </div>
+        <div id="app-main"></div>
+      `;
       updateHeader();
       startLocationTracking();
       startOrderRefresh();
       await go('orders');
     } catch (e) {
-      console.error('初始化失败:', e);
-      renderInitError(e.message || '初始化失败，请检查网络或联系管理员');
+      console.error('加载用户信息失败:', e);
+      toast(e.message || '登录失败，请重试');
+      renderLogin();
     }
-  }
-
-  function renderInitError(msg) {
-    const main = document.getElementById('app-main');
-    if (main) {
-      main.innerHTML = `
-        <div class="empty-state" style="padding-top:40vh;">
-          <span class="empty-emoji">⚠️</span>
-          <div class="empty-desc">${msg}</div>
-          <div style="margin-top:16px;display:flex;gap:12px;justify-content:center;">
-            <button class="btn btn-primary" onclick="Rider.retryInit()">重新加载</button>
-            <button class="btn btn-outline" onclick="Rider.logout()">退出</button>
-          </div>
-        </div>
-      `;
-    }
-    const whEl = document.getElementById('current-warehouse');
-    if (whEl) whEl.textContent = '暂无站点';
-  }
-
-  async function retryInit() {
-    const main = document.getElementById('app-main');
-    if (main) main.innerHTML = '<div class="loading">加载中...</div>';
-    await init();
   }
 
   function updateHeader() {
@@ -480,7 +556,10 @@ const Rider = (function () {
         if (refreshTimer) clearInterval(refreshTimer);
         RiderAPI.setToken('');
         riderInfo = null;
-        window.location.reload();
+        warehouses = [];
+        currentWarehouseId = null;
+        orders = [];
+        renderLogin();
         return true;
       },
     });
@@ -552,7 +631,8 @@ const Rider = (function () {
     callUser,
     toast,
     logout,
-    retryInit,
+    doLogin,
+    doGuestLogin,
   };
 })();
 
