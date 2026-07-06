@@ -107,7 +107,6 @@ input, textarea { font-family: inherit; outline: none; border: none; }
     max-height: 100dvh;
     border-radius: 0;
     box-shadow: none;
-    padding-bottom: env(safe-area-inset-bottom, 0);
   }
   .category-page { height: calc(100dvh - var(--tab-h) - env(safe-area-inset-bottom, 0)); }
 }
@@ -139,7 +138,8 @@ input, textarea { font-family: inherit; outline: none; border: none; }
 /* ---------- Bottom Tab Bar ---------- */
 .tab-bar {
   flex-shrink: 0;
-  height: var(--tab-h);
+  height: calc(var(--tab-h) + var(--safe-bottom));
+  min-height: calc(60px + env(safe-area-inset-bottom, 0));
   background: rgba(255, 255, 255, 0.96);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
@@ -155,7 +155,8 @@ input, textarea { font-family: inherit; outline: none; border: none; }
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
+  padding-top: 8px;
   gap: 3px;
   color: var(--color-muted);
   transition: color 0.2s;
@@ -575,7 +576,7 @@ input, textarea { font-family: inherit; outline: none; border: none; }
    ========================================================================== */
 .cart-float {
   position: absolute;
-  bottom: calc(var(--tab-h) + 14px);
+  bottom: calc(var(--tab-h) + var(--safe-bottom) + 14px);
   left: 16px;
   right: 16px;
   height: 52px;
