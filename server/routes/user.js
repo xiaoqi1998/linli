@@ -2,6 +2,54 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const { success, error, now, daysFromNow } = require('../helpers');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+
+// 头像上传配置
+const avatarStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadDir = path.join(__dirname, '..', 'uploads', 'avatars');
+    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname) || '.png';
+    cb(null, `user_${req.userId}_${Date.now()}${ext}`);
+  },
+});
+const avatarUpload = multer({
+  storage: avatarStorage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    if (!allowedTypes.includes(file.mimetype)) {
+      return cb(new Error('仅支持 JPG/PNG/GIF/WEBP 格式图片'), false);
+    }
+    cb(null, true);
+  },
+});
+
+/**
+ * POST /api/v1/user/avatar
+ * 上传头像
+ */
+router.post('/avatar', avatarUpload.single('avatar'), (req, res) => {
+  if (!req.file) {
+    return error(res, '请上传头像图片', 400);
+  }
+
+  const avatarUrl = `/uploads/avatars/${req.file.filename}`;
+
+  try {
+    db.prepare(`UPDATE user SET avatar_url = ? WHERE id = ?`).run(avatarUrl, req.userId);
+    return success(res, { avatarUrl }, '头像上传成功');
+  } catch (e) {
+    // 删除已上传文件
+    fs.unlinkSync(req.file.path);
+    return error(res, '上传失败: ' + e.message, 500);
+  }
+});
 
 /**
  * GET /api/v1/user/profile

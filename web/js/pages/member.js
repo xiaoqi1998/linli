@@ -38,7 +38,7 @@ const MemberPage = (function () {
             (() => {
               const url = user.avatarUrl || user.avatar || '';
               if (url.includes('placehold.co')) return '😊';
-              if (url.startsWith('http')) {
+              if (url.startsWith('http') || url.startsWith('/uploads')) {
                 return `<img src="${url}" alt="头像" style="width:100%;height:100%;border-radius:50%;object-fit:cover;display:block;" onerror="this.parentNode.textContent='😊'" />`;
               }
               return url || '😊';
@@ -487,7 +487,7 @@ const MemberPage = (function () {
   function openEditProfile() {
     const user = App.state.user || {};
     const currentAvatar = (user.avatarUrl || '').includes('placehold.co') ? '😊' : (user.avatarUrl || user.avatar || '😊');
-    const isEmojiAvatar = !currentAvatar.startsWith('http');
+    const isImageAvatar = currentAvatar.startsWith('http') || currentAvatar.startsWith('/uploads');
 
     const overlay = document.createElement('div');
     overlay.className = 'sheet-overlay';
@@ -502,9 +502,11 @@ const MemberPage = (function () {
         <div style="padding:0 20px 24px">
           <div class="edit-profile-section">
             <label>头像</label>
-            <div class="avatar-picker">
-              <div class="avatar-current" id="avatar-preview">${isEmojiAvatar ? currentAvatar : `<img src="${currentAvatar}" style="width:100%;height:100%;border-radius:50%;object-fit:cover" onerror="this.parentNode.textContent='😊'" />`}</div>
-              <div class="avatar-grid">
+            <div class="avatar-picker" style="flex-wrap:wrap">
+              <div class="avatar-current" id="avatar-preview" style="cursor:pointer" onclick="MemberPage.triggerUpload()">${isImageAvatar ? `<img src="${currentAvatar}" style="width:100%;height:100%;border-radius:50%;object-fit:cover" onerror="this.parentNode.textContent='😊'" />` : currentAvatar}</div>
+              <input type="file" id="avatar-upload-input" accept="image/jpeg,image/png,image/gif,image/webp" style="display:none" onchange="MemberPage.handleUpload(event)" />
+              <button style="padding:8px 12px;background:var(--color-primary);color:#fff;border-radius:8px;font-size:13px;margin-left:12px" onclick="MemberPage.triggerUpload()">上传图片</button>
+              <div class="avatar-grid" style="width:100%;margin-top:12px">
                 ${PRESET_AVATARS.map(a => `<div class="avatar-option" onclick="MemberPage.selectAvatar('${a}')">${a}</div>`).join('')}
               </div>
             </div>
@@ -523,22 +525,78 @@ const MemberPage = (function () {
     `;
     document.body.appendChild(overlay);
     // 记录当前选中的头像
-    overlay.dataset.avatar = isEmojiAvatar ? currentAvatar : '';
+    overlay.dataset.avatar = isImageAvatar ? '' : currentAvatar;
+    overlay.dataset.avatarUrl = isImageAvatar ? currentAvatar : '';
     // 点击遮罩关闭
     overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  }
+
+  function triggerUpload() {
+    const input = document.getElementById('avatar-upload-input');
+    if (input) input.click();
+  }
+
+  async function handleUpload(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    if (file.size > 5 * 1024 * 1024) {
+      App.toast('图片不能超过5MB');
+      return;
+    }
+
+    const preview = document.getElementById('avatar-preview');
+    const overlay = document.getElementById('edit-profile-sheet');
+
+    // 本地预览
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      if (preview) {
+        preview.innerHTML = `<img src="${e.target.result}" style="width:100%;height:100%;border-radius:50%;object-fit:cover" />`;
+      }
+    };
+    reader.readAsDataURL(file);
+
+    // 上传到服务器
+    try {
+      App.toast('上传中...');
+      const formData = new FormData();
+      formData.append('avatar', file);
+      const res = await fetch('/api/v1/user/avatar', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+        body: formData,
+      });
+      const data = await res.json();
+      if (data.code === 0 && data.data?.avatarUrl) {
+        if (overlay) {
+          overlay.dataset.avatarUrl = data.data.avatarUrl;
+          overlay.dataset.avatar = '';
+        }
+        App.toast('上传成功');
+      } else {
+        App.toast(data.message || '上传失败');
+      }
+    } catch (e) {
+      App.toast('上传失败');
+    }
   }
 
   function selectAvatar(emoji) {
     const preview = document.getElementById('avatar-preview');
     if (preview) preview.textContent = emoji;
     const overlay = document.getElementById('edit-profile-sheet');
-    if (overlay) overlay.dataset.avatar = emoji;
+    if (overlay) {
+      overlay.dataset.avatar = emoji;
+      overlay.dataset.avatarUrl = '';
+    }
   }
 
   async function saveProfile() {
     const nickName = document.getElementById('edit-nickname')?.value?.trim();
     const overlay = document.getElementById('edit-profile-sheet');
-    const avatarUrl = overlay?.dataset?.avatar || '';
+    const avatarEmoji = overlay?.dataset?.avatar || '';
+    const avatarUrl = overlay?.dataset?.avatarUrl || '';
 
     if (!nickName) { App.toast('昵称不能为空'); return; }
     if (nickName.length > 20) { App.toast('昵称最多20个字符'); return; }
@@ -549,7 +607,9 @@ const MemberPage = (function () {
     try {
       const data = {};
       if (nickName !== (App.state.user?.nickName || '')) data.nickName = nickName;
-      if (avatarUrl && avatarUrl !== (App.state.user?.avatarUrl || '')) data.avatarUrl = avatarUrl;
+      // 头像优先使用上传的URL，否则使用emoji
+      const finalAvatar = avatarUrl || avatarEmoji;
+      if (finalAvatar && finalAvatar !== (App.state.user?.avatarUrl || '')) data.avatarUrl = finalAvatar;
       if (Object.keys(data).length === 0) {
         App.toast('没有修改');
         overlay?.remove();
@@ -623,5 +683,5 @@ const MemberPage = (function () {
     });
   }
 
-  return { render, renderAddresses, renderAddressEdit, renderCoupons, renderPoints, selectTag, saveAddress, deleteAddress, bindMapPicker, openEditProfile, selectAvatar, saveProfile, checkIn, exchange };
+  return { render, renderAddresses, renderAddressEdit, renderCoupons, renderPoints, selectTag, saveAddress, deleteAddress, bindMapPicker, openEditProfile, triggerUpload, handleUpload, selectAvatar, saveProfile, checkIn, exchange };
 })();
