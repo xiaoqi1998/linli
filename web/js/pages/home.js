@@ -134,11 +134,12 @@ const HomePage = (function () {
             ${banners.map(b => `
               <div class="banner-slide" onclick="App.go('${b.link}')">
                 <div class="banner-slide-bg ${b.bg}"></div>
+                ${b.image ? `<img src="${b.image}" class="banner-slide-img" onerror="this.remove()">` : ''}
                 <div class="banner-slide-content">
                   <div class="banner-slide-title">${b.title}</div>
                   <div class="banner-slide-sub">${b.subtitle}</div>
                 </div>
-                ${b.image ? `<img src="${b.image}" class="banner-slide-emoji" onerror="this.outerHTML='<span class=\\'banner-slide-emoji\\'>${b.emoji}</span>'">` : `<span class="banner-slide-emoji">${b.emoji}</span>`}
+                ${b.image ? '' : `<span class="banner-slide-emoji">${b.emoji}</span>`}
               </div>
             `).join('')}
           </div>
