@@ -342,9 +342,10 @@ const seed = db.transaction(() => {
     '韩骑手','杨骑手','朱骑手','秦骑手','尤骑手','许骑手','何骑手','吕骑手',
     '施骑手','黄骑手','梁骑手','宋骑手','唐骑手','薛骑手','雷骑手','贺骑手',
     '倪骑手','汤骑手','滕骑手','殷骑手','罗骑手','毕骑手','郝骑手','邬骑手'];
+  const defaultRiderPwdHash = bcrypt.hashSync('123456', 10);
   const insertRider = db.prepare(`
-    INSERT INTO rider (id, name, phone, warehouse_id, status, lat, lng, current_orders, location_updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO rider (id, name, phone, password_hash, warehouse_id, status, lat, lng, current_orders, location_updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertRiderWh = db.prepare(`
     INSERT INTO rider_warehouse (rider_id, warehouse_id, is_default, status) VALUES (?, ?, ?, 1)
@@ -356,10 +357,10 @@ const seed = db.transaction(() => {
     const [whId, , , , whLat, whLng] = wh;
     for (let r = 0; r < 2; r++) {
       const name = RIDER_NAMES[(riderId - 1) % RIDER_NAMES.length];
-      const phone = '139' + String(130000 + riderId).padStart(6, '0');
+      const phone = '139' + String(10000000 + riderId).padStart(8, '0');
       const lat = whLat + (Math.random() - 0.5) * 0.008;
       const lng = whLng + (Math.random() - 0.5) * 0.008;
-      insertRider.run(riderId, name, phone, whId, 1, lat, lng, riderId % 3, n);
+      insertRider.run(riderId, name, phone, defaultRiderPwdHash, whId, 1, lat, lng, riderId % 3, n);
       riderId++;
     }
   }

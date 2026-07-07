@@ -104,6 +104,41 @@ router.post('/login', (req, res) => {
  * Demo 快速体验登录 (免注册)
  * Body: { role?: 'user' | 'rider' | 'leader' }
  */
+router.post('/rider-login', (req, res) => {
+  const { phone, password } = req.body;
+
+  if (!phone || !password) {
+    return error(res, '手机号和密码不能为空', 400);
+  }
+
+  const rider = db.prepare(`
+    SELECT id, name, phone, password_hash, status
+    FROM rider WHERE phone = ?
+  `).get(phone);
+
+  if (!rider) {
+    return error(res, '手机号未注册', 404);
+  }
+
+  if (rider.status !== 1) {
+    return error(res, '账号已被禁用', 403);
+  }
+
+  if (!rider.password_hash || !bcrypt.compareSync(password, rider.password_hash)) {
+    return error(res, '手机号或密码错误', 401);
+  }
+
+  const token = generateToken(rider.id, 'rider');
+
+  return success(res, {
+    token,
+    riderId: rider.id,
+    name: rider.name,
+    phone: rider.phone,
+    role: 'rider',
+  }, '登录成功');
+});
+
 router.post('/login-guest', (req, res) => {
   const { role } = req.body;
 

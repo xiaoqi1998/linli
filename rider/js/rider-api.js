@@ -19,8 +19,8 @@ const RiderAPI = (function () {
     return json;
   }
 
-  async function login(phone) {
-    const res = await request('POST', '/auth/login', { phone });
+  async function login(phone, password) {
+    const res = await request('POST', '/auth/rider-login', { phone, password });
     if (res.token) setToken(res.token);
     return res;
   }

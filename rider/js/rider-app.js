@@ -52,7 +52,7 @@ const Rider = (function () {
       return;
     }
     try {
-      await RiderAPI.login(phone);
+      await RiderAPI.login(phone, password);
       await loadProfile();
     } catch (e) {
       toast(e.message || '登录失败');

@@ -470,6 +470,7 @@ CREATE TABLE IF NOT EXISTS rider (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   phone TEXT,
+  password_hash TEXT,
   warehouse_id INTEGER NOT NULL DEFAULT 0,
   status INTEGER NOT NULL DEFAULT 1,
   lat REAL,
@@ -480,6 +481,7 @@ CREATE TABLE IF NOT EXISTS rider (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_rider_status ON rider(status);
+CREATE INDEX IF NOT EXISTS idx_rider_phone ON rider(phone);
 
 -- ----------------------------------------------------------------------------
 -- 24-1. 骑手-站点关联表 (多对多)
