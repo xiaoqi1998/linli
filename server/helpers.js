@@ -10,7 +10,7 @@ function success(res, data = {}, message = 'success') {
 /**
  * 统一错误响应
  */
-function error(res, message = '操作失败', code = 1, httpStatus = 200) {
+function error(res, message = '操作失败', httpStatus = 400, code = 1) {
   return res.status(httpStatus).json({ code, message, data: null });
 }
 

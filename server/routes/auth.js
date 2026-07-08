@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
-const { success, error } = require('../helpers');
+const { success, error, now } = require('../helpers');
 const { generateToken } = require('../middleware/auth');
 const bcrypt = require('bcryptjs');
 
@@ -139,6 +139,24 @@ router.post('/rider-login', (req, res) => {
   }, '登录成功');
 });
 
+/**
+ * POST /api/v1/auth/rider-reset-password
+ * 骑手重置密码
+ * Body: { phone, newPassword }
+ */
+router.post('/rider-reset-password', (req, res) => {
+  const { phone, newPassword } = req.body;
+  if (!phone || !newPassword) return error(res, '手机号和新密码不能为空', 400);
+  if (newPassword.length < 6) return error(res, '密码至少6位', 400);
+
+  const rider = db.prepare(`SELECT id FROM rider WHERE phone = ?`).get(phone);
+  if (!rider) return error(res, '手机号未注册', 404);
+
+  const hash = bcrypt.hashSync(newPassword, 10);
+  db.prepare(`UPDATE rider SET password_hash = ?, updated_at = ? WHERE id = ?`).run(hash, now(), rider.id);
+  return success(res, {}, '密码重置成功');
+});
+
 router.post('/login-guest', (req, res) => {
   const { role } = req.body;
 
@@ -208,7 +226,7 @@ router.post('/admin-login', (req, res) => {
   }
 
   const admin = db.prepare(`
-    SELECT a.*, r.name as role_name, r.permissions
+    SELECT a.*, r.name as role_name, r.permissions, r.data_scope
     FROM admin_user a
     LEFT JOIN admin_role r ON r.id = a.role_id
     WHERE a.username = ? AND a.status = 1
@@ -233,6 +251,8 @@ router.post('/admin-login', (req, res) => {
     roleId: admin.role_id,
     roleName: admin.role_name || '管理员',
     permissions: JSON.parse(admin.permissions || '[]'),
+    dataScope: admin.data_scope || 'all',
+    scopeId: admin.scope_id
   }, '登录成功');
 });
 

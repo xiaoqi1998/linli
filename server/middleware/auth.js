@@ -43,13 +43,20 @@ function adminAuthMiddleware(req, res, next) {
 
     // 如果是 admin token, 加载管理员信息
     if (decoded.role === 'admin' && decoded.adminId) {
-      const admin = db.prepare(`SELECT a.*, r.name as role_name, r.permissions FROM admin_user a LEFT JOIN admin_role r ON r.id = a.role_id WHERE a.id = ? AND a.status = 1`).get(decoded.adminId);
+      const admin = db.prepare(`SELECT a.*, r.name as role_name, r.permissions, r.data_scope FROM admin_user a LEFT JOIN admin_role r ON r.id = a.role_id WHERE a.id = ? AND a.status = 1`).get(decoded.adminId);
       if (!admin) {
         return res.status(403).json({ code: 403, message: '管理员账号已禁用', data: null });
       }
       req.adminId = admin.id;
       req.adminRole = admin.role_name;
       req.adminPermissions = JSON.parse(admin.permissions || '[]');
+      // 数据范围: all=超级管理员(全量), site=站点管理员(本站点)
+      // 站点管理员 scope_id 必须有值,否则视为无权限访问任何数据
+      const dataScope = admin.data_scope || 'all';
+      req.adminScope = {
+        dataScope,
+        scopeId: dataScope === 'site' ? admin.scope_id : null
+      };
     }
     next();
   } catch (err) {

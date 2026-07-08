@@ -280,6 +280,13 @@ const App = (function () {
     return (n || 0).toFixed(2);
   }
 
+  function escapeHtml(str) {
+    if (str == null) return '';
+    return String(str).replace(/[&<>"']/g, function (m) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[m];
+    });
+  }
+
   function tagLabel(tag) {
     const map = { recommend: '团长推荐', special: '今日特价', new: '新品', hot: '热销' };
     return map[tag] || tag;
@@ -453,7 +460,7 @@ const App = (function () {
     init, navigate, render: navigate, go, back,
     toast, showModal, closeModal, showSheet, closeSheet,
     refreshCart, updateCartFloat, addToCart, getCartCount, getCartTotal, getSelectedItems,
-    fmtMoney, tagLabel, tagClass, productImgHtml, renderProductCard, statusText, statusClass,
+    fmtMoney, escapeHtml, tagLabel, tagClass, productImgHtml, renderProductCard, statusText, statusClass,
     skeletonGrid, emptyState,
   };
 })();

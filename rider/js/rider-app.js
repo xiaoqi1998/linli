@@ -7,6 +7,7 @@ const Rider = (function () {
   let todayStats = null;
   let locationTimer = null;
   let refreshTimer = null;
+  let isOnline = true;
 
   async function init() {
     renderLogin();
@@ -30,7 +31,7 @@ const Rider = (function () {
           <button class="btn btn-outline btn-block mt-2" onclick="Rider.doGuestLogin()">体验登录</button>
         </div>
         <div class="login-footer">
-          <a href="#" onclick="Rider.toast('功能开发中')" class="link">忘记密码?</a>
+          <a href="#" onclick="Rider.showResetPassword()" class="link">忘记密码?</a>
         </div>
       </div>
     `;
@@ -43,14 +44,8 @@ const Rider = (function () {
   async function doLogin() {
     const phone = document.getElementById('login-phone')?.value;
     const password = document.getElementById('login-password')?.value;
-    if (!phone) {
-      toast('请输入手机号');
-      return;
-    }
-    if (!password) {
-      toast('请输入密码');
-      return;
-    }
+    if (!phone) { toast('请输入手机号'); return; }
+    if (!password) { toast('请输入密码'); return; }
     try {
       await RiderAPI.login(phone, password);
       await loadProfile();
@@ -68,6 +63,42 @@ const Rider = (function () {
     }
   }
 
+  function showResetPassword() {
+    showModal({
+      title: '重置密码',
+      body: `
+        <div style="text-align:left;">
+          <div class="form-group" style="margin-bottom:12px;">
+            <input type="tel" id="reset-phone" placeholder="请输入注册手机号" maxlength="11" class="form-input">
+          </div>
+          <div class="form-group" style="margin-bottom:12px;">
+            <input type="password" id="reset-password" placeholder="请输入新密码（至少6位）" class="form-input">
+          </div>
+          <div class="form-group">
+            <input type="password" id="reset-password2" placeholder="请再次输入新密码" class="form-input">
+          </div>
+        </div>
+      `,
+      confirmText: '确认重置',
+      onConfirm: async () => {
+        const phone = document.getElementById('reset-phone')?.value;
+        const pwd = document.getElementById('reset-password')?.value;
+        const pwd2 = document.getElementById('reset-password2')?.value;
+        if (!phone || phone.length !== 11) { toast('请输入正确的手机号'); return false; }
+        if (!pwd || pwd.length < 6) { toast('密码至少6位'); return false; }
+        if (pwd !== pwd2) { toast('两次密码不一致'); return false; }
+        try {
+          await RiderAPI.resetPassword(phone, pwd);
+          toast('密码重置成功，请重新登录');
+          return true;
+        } catch (e) {
+          toast(e.message || '重置失败');
+          return false;
+        }
+      },
+    });
+  }
+
   async function loadProfile() {
     const main = document.getElementById('app-main');
     if (main) main.innerHTML = '<div class="loading">登录中...</div>';
@@ -75,6 +106,7 @@ const Rider = (function () {
       const profile = await RiderAPI.getProfile();
       riderInfo = profile.rider;
       warehouses = profile.warehouses || [];
+      isOnline = riderInfo?.status === 1;
       currentWarehouseId = warehouses.length > 0
         ? (warehouses.find(w => w.is_default)?.id || warehouses[0].id)
         : null;
@@ -91,7 +123,7 @@ const Rider = (function () {
             </div>
           </div>
           <div class="header-right">
-            <span class="status-badge" id="online-status">离线</span>
+            <span class="status-badge" id="online-status" onclick="Rider.toggleOnline()">${isOnline ? '在线' : '离线'}</span>
           </div>
         </div>
         <div class="tab-bar">
@@ -132,8 +164,8 @@ const Rider = (function () {
     if (nameEl) nameEl.textContent = riderInfo?.name || '骑手';
     const statusEl = document.getElementById('online-status');
     if (statusEl) {
-      statusEl.textContent = riderInfo ? '在线' : '离线';
-      statusEl.className = 'status-badge ' + (riderInfo ? 'online' : '');
+      statusEl.textContent = isOnline ? '在线' : '离线';
+      statusEl.className = 'status-badge ' + (isOnline ? 'online' : '');
     }
     const whEl = document.getElementById('current-warehouse');
     if (whEl) {
@@ -148,11 +180,19 @@ const Rider = (function () {
     }
   }
 
-  function showWarehouseSelector() {
-    if (warehouses.length === 0) {
-      toast('暂无可用站点');
-      return;
+  async function toggleOnline() {
+    try {
+      await RiderAPI.updateStatus(isOnline ? 0 : 1);
+      isOnline = !isOnline;
+      updateHeader();
+      toast(isOnline ? '已上线' : '已下线');
+    } catch (e) {
+      toast(e.message || '状态切换失败');
     }
+  }
+
+  function showWarehouseSelector() {
+    if (warehouses.length === 0) { toast('暂无可用站点'); return; }
     const overlay = document.createElement('div');
     overlay.className = 'sheet-overlay';
     overlay.id = 'warehouse-sheet';
@@ -270,43 +310,67 @@ const Rider = (function () {
     const addr = o.address || {};
     const items = o.items || [];
     const wh = o.warehouse || {};
+    const delivery = o.delivery || {};
 
     let stepsHtml = '';
     if (actionType !== 'accept' && actionType !== 'done') {
-      const steps = [
-        { label: '接单', done: true, icon: '✓' },
-        { label: '取货', done: o.deliveryStatus >= 2, current: o.deliveryStatus === 1, icon: o.deliveryStatus >= 2 ? '✓' : '2' },
-        { label: '送达', done: o.deliveryStatus >= 3, current: o.deliveryStatus === 2, icon: o.deliveryStatus >= 3 ? '✓' : '3' },
-      ];
-      stepsHtml = `
-        <div class="delivery-steps">
-          ${steps.map(s => `
-            <div class="step-item ${s.done ? 'done' : ''} ${s.current ? 'current' : ''}">
-              <div class="step-dot">${s.icon}</div>
-              <div class="step-label">${s.label}</div>
-            </div>
-          `).join('')}
-        </div>
-      `;
+      let steps;
+      if (actionType === 'pick') {
+        steps = [
+          { label: '接单', done: true, icon: '✓' },
+          { label: '到达取货点', done: !!delivery.arrivePickTime, current: !delivery.arrivePickTime, icon: delivery.arrivePickTime ? '✓' : '2' },
+          { label: '取货', done: false, current: !!delivery.arrivePickTime, icon: '3' },
+        ];
+      } else if (actionType === 'deliver') {
+        steps = [
+          { label: '取货', done: true, icon: '✓' },
+          { label: '到达收货点', done: !!delivery.arriveDeliverTime, current: !delivery.arriveDeliverTime, icon: '2' },
+          { label: '送达', done: false, current: !!delivery.arriveDeliverTime, icon: '3' },
+        ];
+      }
+      if (steps) {
+        stepsHtml = `
+          <div class="delivery-steps">
+            ${steps.map(s => `
+              <div class="step-item ${s.done ? 'done' : ''} ${s.current ? 'current' : ''}">
+                <div class="step-dot">${s.icon}</div>
+                <div class="step-label">${s.label}</div>
+              </div>
+            `).join('')}
+          </div>
+        `;
+      }
     }
 
     let actions = '';
     if (actionType === 'accept') {
       actions = `
         <div class="order-card-actions">
+          <button class="btn btn-outline" onclick="Rider.showOrderDetail(${o.id})">查看详情</button>
           <button class="btn btn-primary" onclick="Rider.acceptOrder(${o.id})">接单配送</button>
         </div>`;
     } else if (actionType === 'pick') {
       actions = `
         <div class="order-card-actions">
           <button class="btn btn-outline" onclick="Rider.callUser('${o.userPhone || ''}')">联系用户</button>
+          ${!delivery.arrivePickTime
+            ? `<button class="btn btn-outline" onclick="Rider.arrivePick(${o.id})">到达取货点</button>`
+            : ''}
           <button class="btn btn-primary" onclick="Rider.pickOrder(${o.id})">确认取货</button>
         </div>`;
     } else if (actionType === 'deliver') {
       actions = `
         <div class="order-card-actions">
           <button class="btn btn-outline" onclick="Rider.callUser('${o.userPhone || ''}')">联系用户</button>
+          ${!delivery.arriveDeliverTime
+            ? `<button class="btn btn-outline" onclick="Rider.arriveDeliver(${o.id})">到达收货点</button>`
+            : ''}
           <button class="btn btn-primary" onclick="Rider.deliverOrder(${o.id})">确认送达</button>
+        </div>`;
+    } else if (actionType === 'done') {
+      actions = `
+        <div class="order-card-actions">
+          <button class="btn btn-outline" onclick="Rider.showOrderDetail(${o.id})">查看详情</button>
         </div>`;
     }
 
@@ -360,11 +424,53 @@ const Rider = (function () {
     `;
   }
 
+  async function showOrderDetail(orderId) {
+    showModal({
+      title: '订单详情',
+      body: '<div class="loading">加载中...</div>',
+      confirmText: '关闭',
+      cancelText: '',
+      onConfirm: () => true,
+    });
+    try {
+      const data = await RiderAPI.getOrderDetail(orderId);
+      const o = data.order || data;
+      const addr = o.address || {};
+      const items = o.items || [];
+      const delivery = o.delivery || {};
+      const wh = o.warehouse || {};
+      const body = `
+        <div style="text-align:left;font-size:14px;line-height:1.8;">
+          <div style="margin-bottom:8px;"><strong>订单号：</strong>${o.orderNo}</div>
+          <div style="margin-bottom:8px;"><strong>状态：</strong>${o.statusText || ''}</div>
+          <div style="margin-bottom:8px;"><strong>下单时间：</strong>${o.payTime || ''}</div>
+          <div style="margin-bottom:8px;"><strong>金额：</strong>¥${(o.payAmount || 0).toFixed(2)}</div>
+          ${wh.name ? `<div style="margin-bottom:8px;"><strong>取货站点：</strong>${wh.name}（${wh.address || ''}）</div>` : ''}
+          <div style="margin-bottom:8px;"><strong>收货人：</strong>${addr.name || o.userName || ''} ${addr.phone || o.userPhone || ''}</div>
+          <div style="margin-bottom:8px;"><strong>收货地址：</strong>${addr.detail || addr.detail_address || ''}</div>
+          ${o.remark ? `<div style="margin-bottom:8px;"><strong>备注：</strong>${o.remark}</div>` : ''}
+          <div style="margin-bottom:8px;"><strong>商品列表：</strong></div>
+          <div style="margin-bottom:8px;padding-left:12px;">
+            ${items.map(it => `<div>${it.sku_name} ${it.spec_name || ''} x${it.quantity} ¥${(it.price || 0).toFixed(2)}</div>`).join('')}
+          </div>
+          ${delivery.acceptTime ? `<div style="margin-bottom:8px;"><strong>接单时间：</strong>${delivery.acceptTime}</div>` : ''}
+          ${delivery.arrivePickTime ? `<div style="margin-bottom:8px;"><strong>到达取货点：</strong>${delivery.arrivePickTime}</div>` : ''}
+          ${delivery.pickTime ? `<div style="margin-bottom:8px;"><strong>取货时间：</strong>${delivery.pickTime}</div>` : ''}
+          ${delivery.arriveDeliverTime ? `<div style="margin-bottom:8px;"><strong>到达收货点：</strong>${delivery.arriveDeliverTime}</div>` : ''}
+          ${delivery.deliverTime ? `<div style="margin-bottom:8px;"><strong>送达时间：</strong>${delivery.deliverTime}</div>` : ''}
+          ${delivery.distance ? `<div style="margin-bottom:8px;"><strong>配送距离：</strong>${(delivery.distance || 0).toFixed(1)}km</div>` : ''}
+        </div>
+      `;
+      document.querySelector('.modal-body').innerHTML = body;
+    } catch (e) {
+      document.querySelector('.modal-body').innerHTML = `<div style="color:#ef4444;">加载失败: ${e.message}</div>`;
+    }
+  }
+
   async function renderProfile() {
     let stats = { accepted: 0, picked: 0, delivered: 0, totalDistance: 0 };
     try {
-      const s = await RiderAPI.getTodayStats();
-      stats = s;
+      stats = await RiderAPI.getTodayStats();
     } catch (e) {}
 
     return `
@@ -398,17 +504,17 @@ const Rider = (function () {
           <span class="rider-menu-value">${warehouses.length}个站点</span>
           <span class="rider-menu-arrow">›</span>
         </div>
-        <div class="rider-menu-item" onclick="Rider.toast('功能开发中')">
+        <div class="rider-menu-item" onclick="Rider.showIncome()">
           <span class="rider-menu-icon">💰</span>
           <span class="rider-menu-text">收入明细</span>
           <span class="rider-menu-arrow">›</span>
         </div>
-        <div class="rider-menu-item" onclick="Rider.toast('功能开发中')">
+        <div class="rider-menu-item" onclick="Rider.showStats()">
           <span class="rider-menu-icon">📊</span>
           <span class="rider-menu-text">配送统计</span>
           <span class="rider-menu-arrow">›</span>
         </div>
-        <div class="rider-menu-item" onclick="Rider.toast('功能开发中')">
+        <div class="rider-menu-item" onclick="Rider.contactSupport()">
           <span class="rider-menu-icon">🎧</span>
           <span class="rider-menu-text">联系客服</span>
           <span class="rider-menu-arrow">›</span>
@@ -420,6 +526,120 @@ const Rider = (function () {
         </div>
       </div>
     `;
+  }
+
+  async function showIncome() {
+    showModal({
+      title: '收入明细',
+      body: '<div class="loading">加载中...</div>',
+      confirmText: '关闭',
+      cancelText: '',
+      onConfirm: () => true,
+    });
+    try {
+      const data = await RiderAPI.getIncome(1, 50);
+      const list = data.list || [];
+      const total = data.totalIncome || 0;
+      const body = `
+        <div style="text-align:left;">
+          <div style="text-align:center;margin-bottom:16px;">
+            <div style="font-size:13px;color:var(--text-light);">总收入</div>
+            <div style="font-size:28px;font-weight:bold;color:#10b981;">¥${(total).toFixed(2)}</div>
+          </div>
+          ${list.length === 0 ? '<div class="empty-state"><span class="empty-emoji">💰</span><div class="empty-desc">暂无收入记录</div></div>' :
+            list.map(item => `
+              <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid var(--border);">
+                <div>
+                  <div style="font-size:14px;font-weight:500;">${item.title || '配送收入'}</div>
+                  <div style="font-size:12px;color:var(--text-light);">${item.time || ''}</div>
+                  <div style="font-size:12px;color:var(--text-light);">${item.orderNo || ''}</div>
+                </div>
+                <div style="font-size:16px;font-weight:bold;color:#10b981;">+¥${(item.amount || 0).toFixed(2)}</div>
+              </div>
+            `).join('')}
+          }
+        </div>
+      `;
+      document.querySelector('.modal-body').innerHTML = body;
+    } catch (e) {
+      document.querySelector('.modal-body').innerHTML = `<div style="color:#ef4444;">加载失败: ${e.message}</div>`;
+    }
+  }
+
+  async function showStats() {
+    showModal({
+      title: '配送统计',
+      body: '<div class="loading">加载中...</div>',
+      confirmText: '关闭',
+      cancelText: '',
+      onConfirm: () => true,
+    });
+    try {
+      const data = await RiderAPI.getStats(7);
+      const totalDelivered = data.totalDelivered || 0;
+      const totalDistance = data.totalDistance || 0;
+      const totalIncome = data.totalIncome || 0;
+      const avgPerDay = data.avgPerDay || 0;
+      const daily = data.daily || [];
+      const body = `
+        <div style="text-align:left;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
+            <div style="text-align:center;padding:12px;background:var(--bg);border-radius:8px;">
+              <div style="font-size:12px;color:var(--text-light);">7日送达</div>
+              <div style="font-size:22px;font-weight:bold;">${totalDelivered}</div>
+            </div>
+            <div style="text-align:center;padding:12px;background:var(--bg);border-radius:8px;">
+              <div style="font-size:12px;color:var(--text-light);">7日里程</div>
+              <div style="font-size:22px;font-weight:bold;">${totalDistance.toFixed(1)}km</div>
+            </div>
+            <div style="text-align:center;padding:12px;background:var(--bg);border-radius:8px;">
+              <div style="font-size:12px;color:var(--text-light);">7日收入</div>
+              <div style="font-size:22px;font-weight:bold;color:#10b981;">¥${totalIncome.toFixed(2)}</div>
+            </div>
+            <div style="text-align:center;padding:12px;background:var(--bg);border-radius:8px;">
+              <div style="font-size:12px;color:var(--text-light);">日均单量</div>
+              <div style="font-size:22px;font-weight:bold;">${avgPerDay.toFixed(1)}</div>
+            </div>
+          </div>
+          <div style="font-size:14px;font-weight:bold;margin-bottom:8px;">每日明细</div>
+          ${daily.length === 0 ? '<div style="text-align:center;color:var(--text-light);padding:16px;">暂无数据</div>' :
+            daily.map(d => `
+              <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);">
+                <div style="font-size:13px;">${d.date}</div>
+                <div style="font-size:13px;">
+                  <span style="margin-right:12px;">📦 ${d.delivered || 0}单</span>
+                  <span style="margin-right:12px;">📏 ${(d.distance || 0).toFixed(1)}km</span>
+                  <span style="color:#10b981;">¥${(d.income || 0).toFixed(2)}</span>
+                </div>
+              </div>
+            `).join('')}
+          }
+        </div>
+      `;
+      document.querySelector('.modal-body').innerHTML = body;
+    } catch (e) {
+      document.querySelector('.modal-body').innerHTML = `<div style="color:#ef4444;">加载失败: ${e.message}</div>`;
+    }
+  }
+
+  function contactSupport() {
+    showModal({
+      title: '联系客服',
+      body: `
+        <div style="text-align:left;">
+          <div style="margin-bottom:12px;">如有问题，可通过以下方式联系客服：</div>
+          <div style="margin-bottom:8px;">📞 客服电话：<a href="tel:400-888-8888" style="color:#10b981;">400-888-8888</a></div>
+          <div style="margin-bottom:8px;">💬 微信客服：linli-service</div>
+          <div style="margin-bottom:8px;">⏰ 服务时间：09:00 - 21:00</div>
+        </div>
+      `,
+      confirmText: '拨打客服',
+      cancelText: '关闭',
+      onConfirm: () => {
+        window.location.href = 'tel:400-888-8888';
+        return true;
+      },
+    });
   }
 
   function updateBadges() {
@@ -450,6 +670,25 @@ const Rider = (function () {
     });
   }
 
+  async function arrivePick(orderId) {
+    showModal({
+      title: '到达取货点',
+      body: '确认已到达取货站点？',
+      confirmText: '确认到达',
+      onConfirm: async () => {
+        try {
+          await RiderAPI.arrivePick(orderId);
+          toast('已记录到达取货点');
+          await go('delivering');
+          return true;
+        } catch (e) {
+          toast(e.message || '操作失败');
+          return false;
+        }
+      },
+    });
+  }
+
   async function pickOrder(orderId) {
     showModal({
       title: '确认取货',
@@ -463,6 +702,25 @@ const Rider = (function () {
           return true;
         } catch (e) {
           toast(e.message || '取货失败');
+          return false;
+        }
+      },
+    });
+  }
+
+  async function arriveDeliver(orderId) {
+    showModal({
+      title: '到达收货点',
+      body: '确认已到达用户收货地址？',
+      confirmText: '确认到达',
+      onConfirm: async () => {
+        try {
+          await RiderAPI.arriveDeliver(orderId);
+          toast('已记录到达收货点');
+          await go('delivering');
+          return true;
+        } catch (e) {
+          toast(e.message || '操作失败');
           return false;
         }
       },
@@ -489,35 +747,28 @@ const Rider = (function () {
   }
 
   function callUser(phone) {
-    if (!phone) {
-      toast('暂无联系电话');
-      return;
-    }
-    if (window.location.protocol === 'tel:') {
-      window.location.href = 'tel:' + phone;
-    } else {
-      showModal({
-        title: '联系用户',
-        body: `用户电话: ${phone}`,
-        confirmText: '拨打',
-        cancelText: '复制号码',
-        onConfirm: () => {
-          window.location.href = 'tel:' + phone;
-          return true;
-        },
-        onCancel: () => {
-          navigator.clipboard?.writeText(phone);
-          toast('号码已复制');
-          return true;
-        },
-      });
-    }
+    if (!phone) { toast('暂无联系电话'); return; }
+    showModal({
+      title: '联系用户',
+      body: `用户电话: ${phone}`,
+      confirmText: '拨打',
+      cancelText: '复制号码',
+      onConfirm: () => {
+        window.location.href = 'tel:' + phone;
+        return true;
+      },
+      onCancel: () => {
+        navigator.clipboard?.writeText(phone);
+        toast('号码已复制');
+        return true;
+      },
+    });
   }
 
   function startLocationTracking() {
     if (locationTimer) clearInterval(locationTimer);
     locationTimer = setInterval(() => {
-      if (navigator.geolocation) {
+      if (navigator.geolocation && isOnline) {
         navigator.geolocation.getCurrentPosition(
           (pos) => {
             RiderAPI.updateLocation(pos.coords.latitude, pos.coords.longitude).catch(() => {});
@@ -583,7 +834,7 @@ const Rider = (function () {
         <div class="modal-title">${title}</div>
         <div class="modal-body">${body}</div>
         <div class="modal-footer">
-          <button class="btn btn-outline" id="modal-cancel">${cancelText}</button>
+          ${cancelText ? `<button class="btn btn-outline" id="modal-cancel">${cancelText}</button>` : ''}
           <button class="btn btn-primary" id="modal-confirm">${confirmText}</button>
         </div>
       </div>
@@ -596,14 +847,17 @@ const Rider = (function () {
       const result = await onConfirm();
       if (result) modal.remove();
     };
-    document.getElementById('modal-cancel').onclick = async () => {
-      if (onCancel) {
-        const result = await onCancel();
-        if (result) modal.remove();
-      } else {
-        modal.remove();
-      }
-    };
+    const cancelBtn = document.getElementById('modal-cancel');
+    if (cancelBtn) {
+      cancelBtn.onclick = async () => {
+        if (onCancel) {
+          const result = await onCancel();
+          if (result) modal.remove();
+        } else {
+          modal.remove();
+        }
+      };
+    }
   }
 
   function getEmoji(name) {
@@ -626,9 +880,17 @@ const Rider = (function () {
     showWarehouseSelector,
     switchWarehouse,
     acceptOrder,
+    arrivePick,
     pickOrder,
+    arriveDeliver,
     deliverOrder,
     callUser,
+    showOrderDetail,
+    showIncome,
+    showStats,
+    contactSupport,
+    showResetPassword,
+    toggleOnline,
     toast,
     logout,
     doLogin,

@@ -145,7 +145,22 @@ const AdminAPI = (function () {
     updateRole: (id, data) => request('PUT', `/admin/roles/${id}`, data),
     getAdminUsers: () => request('GET', '/admin/admin-users'),
     createAdminUser: (data) => request('POST', '/admin/admin-users', data),
+    updateAdminUser: (id, data) => request('PUT', `/admin/admin-users/${id}`, data),
     updateAdminUserStatus: (id, status) => request('PUT', `/admin/admin-users/${id}/status`, { status }),
+    updateAdminUserPassword: (id, newPassword) => request('PUT', `/admin/admin-users/${id}/password`, { newPassword }),
+    deleteAdminUser: (id) => request('DELETE', `/admin/admin-users/${id}`),
+
+    // 前台用户管理
+    getUsers: (params = {}) => {
+      const q = new URLSearchParams();
+      Object.keys(params).forEach(k => { if (params[k] !== undefined && params[k] !== '' && params[k] !== null) q.append(k, params[k]); });
+      const qs = q.toString();
+      return request('GET', '/admin/users' + (qs ? '?' + qs : ''));
+    },
+    getUserDetail: (id) => request('GET', `/admin/users/${id}`),
+    updateUser: (id, data) => request('PUT', `/admin/users/${id}`, data),
+    updateUserStatus: (id, status) => request('PUT', `/admin/users/${id}/status`, { status }),
+    resetUserPassword: (id, newPassword) => request('POST', `/admin/users/${id}/reset-password`, { newPassword }),
 
     // Inventory warnings
     getInventoryWarnings: () => request('GET', '/admin/inventory/warnings'),

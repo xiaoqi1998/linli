@@ -117,13 +117,13 @@ const GroupBuyPage = (function () {
         const defaultAddr = list.find(a => a.isDefault) || list[0];
         if (!defaultAddr) {
           App.toast('请先添加收货地址');
-          setTimeout(() => App.go('address'), 1000);
+          setTimeout(() => App.go('addresses'), 1000);
           return;
         }
         addressId = defaultAddr.id;
       } catch (e) {
         App.toast('请先添加收货地址');
-        setTimeout(() => App.go('address'), 1000);
+        setTimeout(() => App.go('addresses'), 1000);
         return;
       }
 

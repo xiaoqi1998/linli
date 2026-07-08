@@ -86,11 +86,21 @@ const OrderListPage = (function () {
     return document.getElementById('page-container') || document.querySelector('.page') || document.querySelector('.app-content');
   }
 
+  // 异步渲染竞态保护: 记录当前路由, 渲染完成时若路由已变则不更新DOM
+  function safeUpdateView(promise) {
+    const currentHash = location.hash;
+    promise.then(html => {
+      if (location.hash !== currentHash) return; // 路由已变，放弃更新
+      const p = getPageEl();
+      if (p) p.innerHTML = html;
+    });
+  }
+
   async function cancel(orderNo) {
     try {
       await API.cancelOrder(orderNo);
       App.toast('订单已取消');
-      render().then(html => { const p = getPageEl(); if (p) p.innerHTML = html; });
+      safeUpdateView(render());
     } catch (e) { App.toast('操作失败'); }
   }
 
@@ -98,7 +108,7 @@ const OrderListPage = (function () {
     try {
       await API.payOrder(orderNo);
       App.toast('支付成功！');
-      render().then(html => { const p = getPageEl(); if (p) p.innerHTML = html; });
+      safeUpdateView(render());
     } catch (e) { App.toast('支付失败'); }
   }
 
@@ -106,7 +116,7 @@ const OrderListPage = (function () {
     try {
       await API.confirmOrder(orderNo);
       App.toast('确认收货成功！');
-      render().then(html => { const p = getPageEl(); if (p) p.innerHTML = html; });
+      safeUpdateView(render());
     } catch (e) { App.toast('操作失败'); }
   }
 

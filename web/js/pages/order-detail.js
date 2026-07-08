@@ -130,7 +130,7 @@ const OrderDetailPage = (function () {
     try {
       await API.cancelOrder(orderNo);
       App.toast('订单已取消');
-      App.navigate('orders');
+      App.go('orders');
     } catch (e) {
       App.toast('操作失败');
     }
@@ -140,7 +140,7 @@ const OrderDetailPage = (function () {
     try {
       await API.payOrder(orderNo);
       App.toast('支付成功！');
-      App.navigate('orders');
+      App.go('orders');
     } catch (e) {
       App.toast('支付失败，请重试');
     }
@@ -178,7 +178,7 @@ const OrderDetailPage = (function () {
     try {
       await API.confirmOrder(orderNo);
       App.toast('确认收货成功！');
-      App.navigate('orders');
+      App.go('orders');
     } catch (e) {
       App.toast('操作失败');
     }
@@ -251,8 +251,8 @@ const OrderDetailPage = (function () {
         try {
           await API.refundOrder(orderNo, { reason, description: desc });
           App.toast('售后申请已提交，团长将在24小时内处理');
-          // 刷新订单详情
-          render(orderNo);
+          // 刷新订单详情：通过重新导航触发完整渲染
+          App.navigate();
           return true;
         } catch (e) {
           App.toast(e.message || '售后申请失败，请重试');
@@ -310,7 +310,7 @@ const OrderDetailPage = (function () {
             }
             const infoEl = document.getElementById('rider-info');
             if (infoEl) {
-              infoEl.innerHTML = `🛵 <strong>${newData.rider.name}</strong> · ${newData.rider.phone} · 位置更新于 ${newData.rider.locationUpdatedAt || '刚刚'}`;
+              infoEl.innerHTML = `🛵 <strong>${newData.rider.name}</strong> · <a href="tel:${newData.rider.phone}" style="color:var(--color-primary);">${newData.rider.phone}</a> · 位置更新于 ${newData.rider.locationUpdatedAt || '刚刚'} <a href="tel:${newData.rider.phone}" style="margin-left:8px;padding:2px 10px;background:var(--color-primary);color:#fff;border-radius:4px;font-size:12px;text-decoration:none;">📞 联系骑手</a>`;
             }
           } catch (e) {
             // 忽略轮询错误
@@ -360,7 +360,7 @@ const OrderDetailPage = (function () {
       iconSize: [32, 32], iconAnchor: [16, 16],
     });
     const riderMarker = L.marker([rider.latitude, rider.longitude], { icon: riderIcon }).addTo(map);
-    riderMarker.bindPopup(`<strong>${rider.name}</strong><br>${rider.phone}`);
+    riderMarker.bindPopup(`<strong>${rider.name}</strong><br><a href="tel:${rider.phone}" style="color:var(--color-primary);">📞 ${rider.phone}</a>`);
 
     // 收货地址标记
     L.marker([dest.latitude, dest.longitude], {
@@ -378,7 +378,7 @@ const OrderDetailPage = (function () {
     // 信息条
     const infoEl = document.getElementById('rider-info');
     if (infoEl) {
-      infoEl.innerHTML = `🛵 <strong>${rider.name}</strong> · ${rider.phone} · ${data.orderStatus === 40 ? '已送达' : '配送中'}`;
+      infoEl.innerHTML = `🛵 <strong>${rider.name}</strong> · <a href="tel:${rider.phone}" style="color:var(--color-primary);">${rider.phone}</a> · ${data.orderStatus === 40 ? '已送达' : '配送中'} <a href="tel:${rider.phone}" style="margin-left:8px;padding:2px 10px;background:var(--color-primary);color:#fff;border-radius:4px;font-size:12px;text-decoration:none;">📞 联系骑手</a>`;
     }
   }
 

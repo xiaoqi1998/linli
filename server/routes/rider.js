@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const bcrypt = require('bcryptjs');
 const { success, error, now } = require('../helpers');
 const authMiddleware = require('../middleware/auth');
 const { createMessage } = require('./messages');
@@ -370,6 +371,165 @@ router.post('/orders/:id/deliver', (req, res) => {
   }
 
   return success(res, { orderId, status: 40, deliveryStatus: 3 }, '已确认送达');
+});
+
+// 上下线状态切换
+router.post('/status', (req, res) => {
+  const { status } = req.body;
+  if (status !== 0 && status !== 1) return error(res, '状态值无效', 400);
+  const rider = getRider(req.userId);
+  if (!rider) return error(res, '骑手信息不存在', 404);
+  db.prepare(`UPDATE rider SET status = ?, updated_at = ? WHERE id = ?`).run(status, now(), rider.id);
+  return success(res, { status }, status === 1 ? '已上线' : '已下线');
+});
+
+// 订单详情
+router.get('/orders/:id', (req, res) => {
+  const orderId = parseInt(req.params.id);
+  const rider = getRider(req.userId);
+  if (!rider) return error(res, '骑手信息不存在', 404);
+
+  const o = db.prepare(`
+    SELECT o.*, u.nick_name, u.phone as user_phone, c.name as community_name,
+           w.name as warehouse_name, w.address as warehouse_address,
+           w.latitude as warehouse_lat, w.longitude as warehouse_lng
+    FROM \`order\` o
+    LEFT JOIN user u ON u.id = o.user_id
+    LEFT JOIN community c ON c.id = o.community_id
+    LEFT JOIN warehouse w ON w.id = o.warehouse_id
+    WHERE o.id = ?
+  `).get(orderId);
+  if (!o) return error(res, '订单不存在', 404);
+
+  const items = db.prepare(`SELECT sku_name, spec_name, price, quantity FROM order_item WHERE order_id = ?`).all(orderId);
+  const delivery = db.prepare(`SELECT * FROM rider_delivery WHERE order_id = ? AND rider_id = ?`).get(orderId, rider.id);
+  let address = {};
+  try { address = JSON.parse(o.address_snapshot || '{}'); } catch (e) {}
+
+  let statusText = '';
+  let deliveryStatus = delivery?.status || 0;
+  if (o.status === 20) { statusText = '待接单'; deliveryStatus = 0; }
+  else if (o.status === 30) {
+    if (deliveryStatus === 1) statusText = '待取货';
+    else if (deliveryStatus === 2) statusText = '配送中';
+    else statusText = '配送中';
+  } else if (o.status === 40) { statusText = '已送达'; deliveryStatus = 3; }
+  else if (o.status === 50) { statusText = '已完成'; deliveryStatus = 3; }
+
+  return success(res, {
+    order: {
+      id: o.id,
+      orderNo: o.order_no,
+      status: o.status,
+      deliveryStatus,
+      statusText,
+      payAmount: o.pay_amount,
+      payTime: o.pay_time,
+      remark: o.remark,
+      items,
+      address,
+      userName: o.nick_name,
+      userPhone: o.user_phone,
+      communityName: o.community_name,
+      warehouse: { id: o.warehouse_id, name: o.warehouse_name, address: o.warehouse_address, lat: o.warehouse_lat, lng: o.warehouse_lng },
+      delivery: delivery ? {
+        acceptTime: delivery.accept_time,
+        arrivePickTime: delivery.arrive_pick_time,
+        pickTime: delivery.pick_time,
+        arriveDeliverTime: delivery.arrive_deliver_time,
+        deliverTime: delivery.deliver_time,
+        distance: delivery.distance,
+      } : null,
+    }
+  });
+});
+
+// 收入明细
+router.get('/income', (req, res) => {
+  const rider = getRider(req.userId);
+  if (!rider) return error(res, '骑手信息不存在', 404);
+  const page = parseInt(req.query.page) || 1;
+  const pageSize = parseInt(req.query.page_size) || 20;
+  const offset = (page - 1) * pageSize;
+
+  const totalRow = db.prepare(`
+    SELECT COUNT(*) as total, COALESCE(SUM(o.pay_amount * 0.15), 0) as total_income
+    FROM rider_delivery rd
+    JOIN \`order\` o ON o.id = rd.order_id
+    WHERE rd.rider_id = ? AND rd.status = 3
+  `).get(rider.id);
+
+  const rows = db.prepare(`
+    SELECT rd.deliver_time, rd.distance, o.order_no, o.pay_amount,
+           (o.pay_amount * 0.15) as income
+    FROM rider_delivery rd
+    JOIN \`order\` o ON o.id = rd.order_id
+    WHERE rd.rider_id = ? AND rd.status = 3
+    ORDER BY rd.deliver_time DESC
+    LIMIT ? OFFSET ?
+  `).all(rider.id, pageSize, offset);
+
+  const list = rows.map(r => ({
+    orderNo: r.order_no,
+    title: '配送收入',
+    amount: Math.round(r.income * 100) / 100,
+    time: r.deliver_time,
+    distance: r.distance,
+  }));
+
+  return success(res, {
+    list,
+    total: totalRow.total,
+    totalIncome: Math.round(totalRow.total_income * 100) / 100,
+    page,
+    pageSize,
+  });
+});
+
+// 配送统计
+router.get('/stats', (req, res) => {
+  const rider = getRider(req.userId);
+  if (!rider) return error(res, '骑手信息不存在', 404);
+  const days = parseInt(req.query.days) || 7;
+
+  const totals = db.prepare(`
+    SELECT
+      SUM(CASE WHEN rd.status >= 3 THEN 1 ELSE 0 END) as total_delivered,
+      SUM(CASE WHEN rd.status >= 3 THEN rd.distance ELSE 0 END) as total_distance,
+      SUM(CASE WHEN rd.status >= 3 THEN o.pay_amount * 0.15 ELSE 0 END) as total_income
+    FROM rider_delivery rd
+    JOIN \`order\` o ON o.id = rd.order_id
+    WHERE rd.rider_id = ? AND DATE(rd.created_at) >= DATE('now', '-' || ? || ' days')
+  `).get(rider.id, days);
+
+  const dailyRows = db.prepare(`
+    SELECT
+      DATE(rd.created_at) as date,
+      SUM(CASE WHEN rd.status >= 3 THEN 1 ELSE 0 END) as delivered,
+      SUM(CASE WHEN rd.status >= 3 THEN rd.distance ELSE 0 END) as distance,
+      SUM(CASE WHEN rd.status >= 3 THEN o.pay_amount * 0.15 ELSE 0 END) as income
+    FROM rider_delivery rd
+    JOIN \`order\` o ON o.id = rd.order_id
+    WHERE rd.rider_id = ? AND DATE(rd.created_at) >= DATE('now', '-' || ? || ' days')
+    GROUP BY DATE(rd.created_at)
+    ORDER BY date DESC
+  `).all(rider.id, days);
+
+  const totalDelivered = totals?.total_delivered || 0;
+  const avgPerDay = days > 0 ? totalDelivered / days : 0;
+
+  return success(res, {
+    totalDelivered,
+    totalDistance: Math.round((totals?.total_distance || 0) * 10) / 10,
+    totalIncome: Math.round((totals?.total_income || 0) * 100) / 100,
+    avgPerDay: Math.round(avgPerDay * 10) / 10,
+    daily: dailyRows.map(r => ({
+      date: r.date,
+      delivered: r.delivered || 0,
+      distance: Math.round((r.distance || 0) * 10) / 10,
+      income: Math.round((r.income || 0) * 100) / 100,
+    })),
+  });
 });
 
 module.exports = router;

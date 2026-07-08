@@ -564,7 +564,7 @@ const MemberPage = (function () {
       formData.append('avatar', file);
       const res = await fetch('/api/v1/user/avatar', {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+        headers: { 'Authorization': `Bearer ${API.getToken()}` },
         body: formData,
       });
       const data = await res.json();

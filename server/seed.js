@@ -434,8 +434,13 @@ const seed = db.transaction(() => {
   // ========================================================================
   // 14. 管理员
   // ========================================================================
-  db.prepare(`INSERT INTO admin_role (id, name, permissions) VALUES (1, '超级管理员', '["*"]')`).run();
+  db.prepare(`INSERT INTO admin_role (id, name, permissions, data_scope) VALUES (1, '超级管理员', '["*"]', 'all')`).run();
   db.prepare(`INSERT INTO admin_user (id, username, password, real_name, role_id, status) VALUES (1, 'admin', ?, '系统管理员', 1, 1)`).run(bcrypt.hashSync('admin123', 10));
+
+  // 站点管理员角色: data_scope=site, 只能看自己绑定社区的数据
+  db.prepare(`INSERT INTO admin_role (id, name, permissions, data_scope) VALUES (2, '站点管理员', '["*"]', 'site')`).run();
+  // 站点管理员示例账号: 绑定 community_id=1, 密码 site123
+  db.prepare(`INSERT INTO admin_user (id, username, password, real_name, role_id, scope_id, status) VALUES (2, 'siteadmin', ?, '阳光花园站点管理员', 2, 1, 1)`).run(bcrypt.hashSync('site123', 10));
 
   // ========================================================================
   // 15. 积分流水

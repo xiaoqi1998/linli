@@ -37,14 +37,14 @@ const API = (function () {
       });
       clearTimeout(timer);
       const data = await res.json();
-      if (!res.ok) {
+      if (!res.ok || (data && data.code !== undefined && data.code !== 0)) {
         throw { code: data.code || res.status, message: data.message || '请求失败' };
       }
       return data.data !== undefined ? data.data : data;
     } catch (err) {
       clearTimeout(timer);
-      // Network error / timeout / server down → fall back to mock
-      if (opts.mock !== false) {
+      // 仅配送相关API(如骑手位置)允许mock回退，其他API默认不回退mock
+      if (opts.mock === true) {
         const mockResult = mockHandler(method, path, body);
         if (mockResult !== undefined) return mockResult;
       }
@@ -55,7 +55,7 @@ const API = (function () {
   const get = (p, opts) => request('GET', p, null, opts);
   const post = (p, b, opts) => request('POST', p, b, opts);
   const put = (p, b, opts) => request('PUT', p, b, opts);
-  const del = (p, body) => request('DELETE', p, body);
+  const del = (p, body, opts) => request('DELETE', p, body, opts);
 
   /* ========================================================================
      Mock Data & Handler — keeps the UI fully functional without backend
@@ -197,6 +197,9 @@ const API = (function () {
 
   // ---- Mock router ----
   function mockHandler(method, path, body) {
+    // Strip query string for matching
+    const cleanPath = path.split('?')[0];
+
     // Auth
     if (path === '/auth/login' && method === 'POST') {
       if (!body || !body.phone || !body.password) return undefined;
@@ -258,21 +261,24 @@ const API = (function () {
     if (path === '/banners') return BANNERS;
 
     // Cart (mock local cart in memory)
-    if (path === '/cart') return getMockCart();
-    if (path === '/cart/add' && method === 'POST') { addMockCart(body); return getMockCart(); }
-    if (path === '/cart/update' && method === 'POST') { updateMockCart(body); return getMockCart(); }
-    if (path.startsWith('/cart/') && method === 'DELETE') { removeMockCart(parseInt(path.split('/')[2])); return getMockCart(); }
-    if (path === '/cart/clear' && method === 'DELETE') { mockCart = []; return getMockCart(); }
+    if (cleanPath === '/cart' && method === 'GET') return { list: getMockCart() };
+    if (cleanPath === '/cart/add' && method === 'POST') { addMockCart(body); return { list: getMockCart() }; }
+    if (cleanPath === '/cart/update' && method === 'PUT') { updateMockCart(body); return { list: getMockCart() }; }
+    if (cleanPath === '/cart/remove' && method === 'DELETE') {
+      if (body && body.id) removeMockCartById(body.id);
+      else if (body && Array.isArray(body.ids)) body.ids.forEach(id => removeMockCartById(id));
+      return { success: true };
+    }
 
     // Orders
-    if (path === '/orders' && method === 'GET') return ORDERS;
-    if (path === '/orders' && method === 'POST') {
+    if (cleanPath === '/orders' && method === 'GET') return { list: ORDERS, total: ORDERS.length };
+    if (cleanPath === '/orders' && method === 'POST') {
       const no = 'O' + Date.now();
       const order = {
         orderNo: no, status: 10, statusText: '待付款',
         items: (body.items || []).map(it => {
-          const p = PRODUCTS.find(x => x.id === it.id);
-          return { ...it, name: p?.name || '', emoji: p?.emoji || '📦', bg: p?.bg || 'bg-paper', spec: it.spec || p?.spec || '' };
+          const p = PRODUCTS.find(x => x.id === it.skuId || x.id === it.id);
+          return { ...it, id: it.skuId || it.id, name: p?.name || '', emoji: p?.emoji || '📦', bg: p?.bg || 'bg-paper', spec: it.spec || p?.spec || '' };
         }),
         skuTotal: body.skuTotal || 0, deliveryFee: body.deliveryFee || 0, discount: body.discount || 0,
         payAmount: body.payAmount || 0, createdAt: new Date().toLocaleString('zh-CN'),
@@ -281,51 +287,71 @@ const API = (function () {
       ORDERS.unshift(order);
       return order;
     }
-    if (path.startsWith('/orders/') && method === 'GET') {
-      const no = path.split('/')[2];
+    if (cleanPath.startsWith('/orders/') && method === 'GET') {
+      const no = cleanPath.split('/')[2];
       return ORDERS.find(o => o.orderNo === no) || ORDERS[0];
     }
-    if (path.includes('/cancel') && method === 'POST') {
-      const no = path.split('/')[2];
+    if (cleanPath.includes('/cancel') && method === 'POST') {
+      const no = cleanPath.split('/')[2];
       const o = ORDERS.find(x => x.orderNo === no);
       if (o) { o.status = 99; o.statusText = '已取消'; }
       return o;
     }
-    if (path.includes('/pay') && method === 'POST') {
-      const no = path.split('/')[2];
+    if (cleanPath.includes('/pay') && method === 'POST') {
+      const no = cleanPath.split('/')[2];
       const o = ORDERS.find(x => x.orderNo === no);
       if (o) { o.status = 20; o.statusText = '待配送'; o.payTime = new Date().toLocaleString('zh-CN'); }
       return { success: true, orderNo: no };
     }
-    if (path.includes('/confirm') && method === 'POST') {
-      const no = path.split('/')[2];
+    if (cleanPath.includes('/confirm') && method === 'POST') {
+      const no = cleanPath.split('/')[2];
       const o = ORDERS.find(x => x.orderNo === no);
       if (o) { o.status = 50; o.statusText = '已完成'; o.completedTime = new Date().toLocaleString('zh-CN'); }
       return o;
     }
+    if (cleanPath.includes('/req-proxy') && method === 'POST') {
+      const no = cleanPath.split('/')[2];
+      return { token: 'mock-proxy-' + no, url: '#/proxy-pay/mock-proxy-' + no };
+    }
+    // 骑手位置追踪 (配送相关，保留mock)
+    if (cleanPath.match(/^\/orders\/[^/]+\/rider-location$/) && method === 'GET') {
+      return {
+        orderNo: cleanPath.split('/')[2],
+        rider: { name: '小陈', phone: '139****7777', avatar: '🧑‍✈️' },
+        latitude: 22.5400 + (Math.random() - 0.5) * 0.01,
+        longitude: 113.9450 + (Math.random() - 0.5) * 0.01,
+        status: 30,
+        updatedAt: new Date().toLocaleString('zh-CN'),
+      };
+    }
 
-    // Addresses
-    if (path === '/addresses') return ADDRESSES;
-    if (path === '/addresses' && method === 'POST') {
+    // Addresses (/user/addresses)
+    if (cleanPath === '/user/addresses' && method === 'GET') return { list: ADDRESSES };
+    if (cleanPath === '/user/addresses' && method === 'POST') {
       const a = { id: Date.now(), isDefault: false, ...body };
       ADDRESSES.push(a); return a;
     }
-    if (path.startsWith('/addresses/') && method === 'PUT') {
-      const id = parseInt(path.split('/')[2]);
+    if (cleanPath.startsWith('/user/addresses/') && method === 'PUT') {
+      const id = parseInt(cleanPath.split('/')[3]);
       const idx = ADDRESSES.findIndex(a => a.id === id);
       if (idx >= 0) ADDRESSES[idx] = { ...ADDRESSES[idx], ...body };
       return ADDRESSES[idx];
     }
-    if (path.startsWith('/addresses/') && method === 'DELETE') {
-      const id = parseInt(path.split('/')[2]);
+    if (cleanPath.startsWith('/user/addresses/') && method === 'DELETE') {
+      const id = parseInt(cleanPath.split('/')[3]);
       const idx = ADDRESSES.findIndex(a => a.id === id);
       if (idx >= 0) ADDRESSES.splice(idx, 1);
       return { success: true };
     }
 
-    // Coupons
-    if (path === '/coupons') return COUPONS;
-    if (path === '/coupons/available') return COUPONS.filter(c => c.status === 0);
+    // Coupons (/user/coupons)
+    if (cleanPath === '/user/coupons' && method === 'GET') {
+      // Support ?status=0 filter
+      const qs = path.split('?')[1] || '';
+      const sp = new URLSearchParams(qs);
+      const status = sp.get('status');
+      return { list: status !== null ? COUPONS.filter(c => c.status == status) : COUPONS };
+    }
 
     // Group buy
     if (path === '/group-buys') return GROUP_BUYS;
@@ -342,7 +368,7 @@ const API = (function () {
     }
 
     // Points
-    if (path === '/user/points') return { points: USER.points, history: [{ desc: '消费获得', amount: 38, time: '2026-07-02' }, { desc: '每日签到', amount: 5, time: '2026-07-03' }, { desc: '首次评价', amount: 10, time: '2026-07-01' }] };
+    if (path === '/user/points') return { points: USER.points, list: [{ desc: '消费获得', amount: 38, time: '2026-07-02' }, { desc: '每日签到', amount: 5, time: '2026-07-03' }, { desc: '首次评价', amount: 10, time: '2026-07-01' }] };
     if (path.startsWith('/user/points/history')) return { list: [{ desc: '消费获得', amount: 38, time: '2026-07-02' }, { desc: '每日签到', amount: 5, time: '2026-07-03' }, { desc: '首次评价', amount: 10, time: '2026-07-01' }], total: 3, points: USER.points };
     if (path === '/user/points/exchange-options') return { list: EXCHANGE_OPTIONS, points: USER.points };
     if (path === '/user/points/exchange' && method === 'POST') {
@@ -402,15 +428,19 @@ const API = (function () {
     });
   }
   function addMockCart(body) {
-    const exist = mockCart.find(x => x.id === body.id && x.spec === (body.spec || ''));
+    const skuId = body.skuId || body.id;
+    const exist = mockCart.find(x => x.id === skuId && x.spec === (body.spec || ''));
     if (exist) exist.quantity += body.quantity || 1;
-    else mockCart.push({ id: body.id, spec: body.spec || '', quantity: body.quantity || 1, selected: true });
+    else mockCart.push({ id: skuId, spec: body.spec || '', quantity: body.quantity || 1, selected: true });
   }
   function updateMockCart(body) {
-    const item = mockCart.find(x => x.id === body.id && x.spec === (body.spec || ''));
+    const item = mockCart.find(x => x.id === body.id);
     if (item) { if (body.quantity !== undefined) item.quantity = body.quantity; if (body.selected !== undefined) item.selected = body.selected; }
   }
-  function removeMockCart(idx) { if (mockCart[idx]) mockCart.splice(idx, 1); }
+  function removeMockCartById(id) {
+    const idx = mockCart.findIndex(x => x.id === id);
+    if (idx >= 0) mockCart.splice(idx, 1);
+  }
 
   // ---- Product Transformer (API snake_case → frontend camelCase) ----
   const CATEGORY_EMOJI = {
@@ -648,6 +678,7 @@ const API = (function () {
     addToCart: (skuId, quantity, spec) => post('/cart/add', { skuId, quantity, skuSpecId: spec }),
     updateCart: (id, quantity, selected, spec) => put('/cart/update', { id, quantity, selected }),
     removeFromCart: (id) => del('/cart/remove', { id }),
+    batchRemoveFromCart: (ids) => del('/cart/remove', { ids }),
     clearCart: () => del('/cart/remove', {}),
     getOrders: (status) => get('/orders' + (status ? '?status=' + status : '')),
     getOrder: async (no) => {
@@ -669,7 +700,7 @@ const API = (function () {
     getCommunities: () => get('/products/communities'),
     locateCommunity: (lat, lng) => get('/products/locate-community?lat=' + lat + '&lng=' + lng),
     ipLocate: () => get('/products/ip-locate'),
-    getRiderLocation: (orderNo) => get('/orders/' + orderNo + '/rider-location'),
+    getRiderLocation: (orderNo) => get('/orders/' + orderNo + '/rider-location', { mock: true }),
     getAddresses: async () => {
       const data = await get('/user/addresses');
       const list = Array.isArray(data) ? data : (data.list || []);

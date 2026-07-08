@@ -97,10 +97,14 @@ const CartPage = (function () {
 
   async function toggleAll() {
     const newSel = !allSelected();
-    for (const item of cartItems) {
-      item.selected = newSel;
-      try { await API.updateCart(item.id, undefined, newSel, item.spec); } catch (e) {}
-    }
+    // 并行更新所有商品选中状态，避免逐项串行请求
+    cartItems.forEach(item => { item.selected = newSel; });
+    updateView(); // 先更新UI避免感知延迟
+    try {
+      await Promise.all(cartItems.map(item =>
+        API.updateCart(item.id, undefined, newSel, item.spec).catch(() => {})
+      ));
+    } catch (e) {}
     App.state.cart = cartItems;
     updateView();
   }
@@ -181,9 +185,11 @@ const CartPage = (function () {
       cancelText: '取消',
       confirmText: '清空',
       onConfirm: async () => {
-        for (const item of cartItems) {
-          try { await API.removeFromCart(item.id); } catch (e) {}
-        }
+        try {
+          // 使用批量删除接口，避免逐项请求
+          const ids = cartItems.map(i => i.id).filter(Boolean);
+          if (ids.length) await API.batchRemoveFromCart(ids);
+        } catch (e) {}
         cartItems = [];
         App.state.cart = [];
         App.updateCartFloat();

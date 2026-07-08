@@ -11,6 +11,7 @@ const OrderConfirmPage = (function () {
   let deliveryType = 1; // 1=尽快 2=预约
   let deliveryTimeSlot = null; // 预约时段, 如 "今天 14:00-14:30"
   let remark = '';
+  let submitting = false; // 防重复提交锁
 
   async function render() {
     // Determine items source: buy-now or cart selected
@@ -173,7 +174,12 @@ const OrderConfirmPage = (function () {
   function getCouponDiscount() {
     if (!selectedCoupon) return 0;
     if (selectedCoupon.type === 1) return selectedCoupon.faceValue;
-    if (selectedCoupon.type === 2) return getSkuTotal() * (1 - selectedCoupon.faceValue);
+    if (selectedCoupon.type === 2) {
+      // face_value 是折扣率: 0.9 表示9折; 兼容数据库可能存的整数(9 表示9折)
+      let rate = selectedCoupon.faceValue;
+      if (rate > 1) rate = rate / 10; // 9 → 0.9
+      return getSkuTotal() * (1 - rate);
+    }
     return 0;
   }
 
@@ -315,7 +321,39 @@ const OrderConfirmPage = (function () {
   function setAddress(id) {
     address = addresses.find(a => a.id === id);
     App.closeSheet();
-    App.navigate();
+    // 局部更新地址区域，避免重新渲染导致备注/配送时间等输入丢失
+    updateAddressView();
+    updatePriceView();
+  }
+
+  function updateAddressView() {
+    const addrEl = document.querySelector('.oc-address-card, [data-addr-section]');
+    if (addrEl && address) {
+      addrEl.outerHTML = `
+        <div class="oc-address-card" data-addr-section style="cursor:pointer;" onclick="OrderConfirmPage.selectAddress()">
+          <div class="addr-icon">📍</div>
+          <div class="addr-info">
+            <div class="addr-name">${address.name || ''} ${address.phone || ''}</div>
+            <div class="addr-detail">${address.address || ''}${address.houseNumber ? ' ' + address.houseNumber : ''}</div>
+          </div>
+          <div class="addr-arrow">›</div>
+        </div>`;
+    }
+  }
+
+  function updatePriceView() {
+    const priceEl = document.querySelector('.oc-price-summary');
+    if (priceEl) {
+      const skuTotal = getSkuTotal();
+      const deliveryFee = getDeliveryFee();
+      const discount = getDiscount();
+      const payAmount = Math.max(0, skuTotal + deliveryFee - discount);
+      priceEl.innerHTML = `
+        <div class="price-row"><span>商品金额</span><span>¥${skuTotal.toFixed(2)}</span></div>
+        <div class="price-row"><span>配送费</span><span>${deliveryFee > 0 ? '¥' + deliveryFee.toFixed(2) : '免配送费'}</span></div>
+        ${discount > 0 ? `<div class="price-row discount"><span>优惠</span><span>-¥${discount.toFixed(2)}</span></div>` : ''}
+        <div class="price-row total"><span>实付</span><span class="price-total">¥${payAmount.toFixed(2)}</span></div>`;
+    }
   }
 
   function selectCoupon() {
@@ -354,7 +392,18 @@ const OrderConfirmPage = (function () {
       selectedCoupon = coupons.find(c => c.userCouponId === userCouponId);
     }
     App.closeSheet();
-    App.navigate();
+    // 局部更新价格区域，避免重新渲染导致备注/配送时间等输入丢失
+    updatePriceView();
+    updateCouponView();
+  }
+
+  function updateCouponView() {
+    const couponEl = document.querySelector('[data-coupon-section]');
+    if (couponEl) {
+      couponEl.innerHTML = selectedCoupon
+        ? `<span class="coupon-name">${selectedCoupon.name || ''}</span><span class="coupon-discount">-¥${getDiscount().toFixed(2)}</span>`
+        : `<span class="text-muted">选择优惠券</span><span class="addr-arrow">›</span>`;
+    }
   }
 
   function setRemark(val) {
@@ -362,6 +411,7 @@ const OrderConfirmPage = (function () {
   }
 
   async function submit(useProxyPay) {
+    if (submitting) return; // 防重复提交
     if (!address) {
       App.toast('请选择收货地址');
       return;
@@ -376,6 +426,7 @@ const OrderConfirmPage = (function () {
       return;
     }
 
+    submitting = true;
     const orderData = {
       items: items.map(i => ({
         skuId: i.skuId || i.id,
@@ -387,23 +438,25 @@ const OrderConfirmPage = (function () {
       deliveryTimeSlot: deliveryType === 1 ? null : deliveryTimeSlot,
       couponId: selectedCoupon ? selectedCoupon.userCouponId : null,
       remark: remark,
-      // 购物车模式传 cart_items.id 用于清空; 立即购买模式不传
       cartItemIds: App.state.buyNowItem ? [] : items.map(i => i.id).filter(Boolean),
     };
 
+    // 按钮 loading 状态
+    const btns = document.querySelectorAll('.oc-submit-bar button');
+    btns.forEach(b => { b.disabled = true; b.dataset.origText = b.textContent; b.textContent = '处理中...'; });
+
     try {
       const order = await API.createOrder(orderData);
+      if (!order || !order.orderNo) {
+        throw new Error('订单创建返回数据异常');
+      }
       App.toast('订单创建成功');
-      // Clear buy-now item
       App.state.buyNowItem = null;
-      // 刷新购物车 (后端已清空，前端同步刷新)
       await App.refreshCart();
 
       if (useProxyPay) {
-        // 找人代付: 生成代付链接, 跳转订单详情让用户分享代付链接
         try {
           const proxy = await API.reqProxyPay(order.orderNo);
-          // 跳转订单详情, 并弹出代付链接
           App.go('order-detail/' + order.orderNo + '?proxy=' + encodeURIComponent(proxy.token));
         } catch (e2) {
           App.toast('代付链接生成失败，可稍后在订单中发起');
@@ -412,20 +465,21 @@ const OrderConfirmPage = (function () {
         return;
       }
 
-      // 调用支付接口 (Demo: 默认支付成功)
       try {
         await API.payOrder(order.orderNo);
       } catch (payErr) {
-        // 支付失败仍跳转订单详情，让用户可手动支付
         console.error('支付失败:', payErr);
         App.go('order-detail/' + order.orderNo);
         return;
       }
 
-      // 支付成功，跳转支付成功页
       App.go('pay-success/' + order.orderNo);
     } catch (e) {
-      App.toast('下单失败，请重试');
+      console.error('下单异常:', e);
+      App.toast('下单失败: ' + (e.message || '请重试'));
+    } finally {
+      submitting = false;
+      btns.forEach(b => { b.disabled = false; b.textContent = b.dataset.origText || b.textContent; });
     }
   }
 

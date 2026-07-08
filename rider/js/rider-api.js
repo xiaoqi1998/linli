@@ -15,20 +15,20 @@ const RiderAPI = (function () {
     if (data) options.body = JSON.stringify(data);
     const res = await fetch(BASE_URL + path, options);
     const json = await res.json();
-    if (!res.ok) throw new Error(json.message || '请求失败');
-    return json;
+    if (!res.ok || json.code !== 0) throw new Error(json.message || '请求失败');
+    return json.data;
   }
 
   async function login(phone, password) {
-    const res = await request('POST', '/auth/rider-login', { phone, password });
-    if (res.token) setToken(res.token);
-    return res;
+    const data = await request('POST', '/auth/rider-login', { phone, password });
+    if (data?.token) setToken(data.token);
+    return data;
   }
 
   async function loginGuest() {
-    const res = await request('POST', '/auth/login-guest', { role: 'rider' });
-    if (res.token) setToken(res.token);
-    return res;
+    const data = await request('POST', '/auth/login-guest', { role: 'rider' });
+    if (data?.token) setToken(data.token);
+    return data;
   }
 
   async function getProfile() {
@@ -75,6 +75,26 @@ const RiderAPI = (function () {
     return request('POST', '/rider/location', { lat, lng });
   }
 
+  async function updateStatus(status) {
+    return request('POST', '/rider/status', { status });
+  }
+
+  async function getIncome(page = 1, pageSize = 20) {
+    return request('GET', `/rider/income?page=${page}&page_size=${pageSize}`);
+  }
+
+  async function getStats(days = 7) {
+    return request('GET', `/rider/stats?days=${days}`);
+  }
+
+  async function getOrderDetail(orderId) {
+    return request('GET', `/rider/orders/${orderId}`);
+  }
+
+  async function resetPassword(phone, newPassword) {
+    return request('POST', '/auth/rider-reset-password', { phone, newPassword });
+  }
+
   return {
     setToken,
     login,
@@ -89,5 +109,10 @@ const RiderAPI = (function () {
     arriveDeliver,
     deliverOrder,
     updateLocation,
+    updateStatus,
+    getIncome,
+    getStats,
+    getOrderDetail,
+    resetPassword,
   };
 })();

@@ -552,6 +552,8 @@ CREATE TABLE IF NOT EXISTS admin_user (
   password TEXT NOT NULL,
   real_name TEXT,
   role_id INTEGER,
+  -- 数据范围: all=全量(超管), site=站点管理员(看自己绑定的站点)
+  scope_id INTEGER,
   status INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -565,6 +567,8 @@ CREATE TABLE IF NOT EXISTS admin_role (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   permissions TEXT,
+  -- data_scope: all=超级管理员(全量), site=站点管理员(本站点)
+  data_scope TEXT NOT NULL DEFAULT 'all',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

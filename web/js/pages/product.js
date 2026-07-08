@@ -30,20 +30,28 @@ const ProductPage = (function () {
     quantity = 1;
     carouselIdx = 0;
 
-    // Fetch reviews and related products via new APIs
+    // 并行获取评论、相关商品、用户订单（用于判断是否可评价）
     reviewData = null;
     relatedData = null;
-    try { reviewData = await API.getProductReviews(id); } catch (e) { reviewData = null; }
-    try { relatedData = await API.getRelatedProducts(id); } catch (e) { relatedData = null; }
-
-    // Check if user has a completed order for this product (can review)
     let reviewOrderId = null;
-    try {
-      const orders = await API.getOrders();
-      const orderList = Array.isArray(orders) ? orders : (orders && orders.list) || [];
-      const completedOrder = orderList.find(o => o.status === 50 && (o.items || []).some(it => (it.skuId || it.sku_id || it.id) == id));
-      if (completedOrder) reviewOrderId = completedOrder.id;
-    } catch (e) { reviewOrderId = null; }
+
+    const [reviewRes, relatedRes, ordersRes] = await Promise.allSettled([
+      API.getProductReviews(id),
+      API.getRelatedProducts(id),
+      API.getOrders(),
+    ]);
+
+    if (reviewRes.status === 'fulfilled') reviewData = reviewRes.value;
+    if (relatedRes.status === 'fulfilled') relatedData = relatedRes.value;
+
+    if (ordersRes.status === 'fulfilled') {
+      try {
+        const orders = ordersRes.value;
+        const orderList = Array.isArray(orders) ? orders : (orders && orders.list) || [];
+        const completedOrder = orderList.find(o => o.status === 50 && (o.items || []).some(it => (it.skuId || it.sku_id || it.id) == id));
+        if (completedOrder) reviewOrderId = completedOrder.id;
+      } catch (e) { reviewOrderId = null; }
+    }
     ProductPage._reviewOrderId = reviewOrderId;
     ProductPage._reviewSkuId = id;
     ProductPage._reviewProductName = product.name;

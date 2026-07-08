@@ -2,13 +2,35 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const { success, error, now } = require('../helpers');
-const authMiddleware = require('../middleware/auth');
-const { generateAdminToken } = require('../middleware/auth');
+const { adminAuthMiddleware, generateAdminToken } = require('../middleware/auth');
 const { createMessage } = require('./messages');
 const bcrypt = require('bcryptjs');
 
-// 所有后台接口需要登录 (Demo: 复用用户Token, 正式环境应区分角色)
-router.use(authMiddleware);
+// 所有后台接口需要管理员登录, 自动注入 req.adminScope (dataScope + scopeId)
+router.use(adminAuthMiddleware);
+
+/**
+ * 构造数据范围过滤条件
+ * @param {object} scope - req.adminScope
+ * @param {object} fieldMap - 表字段映射, 如 { community: 'o.community_id', warehouse: 'o.warehouse_id' }
+ * @returns {string} SQL 片段(已带占位符) + 绑定参数顺序对应
+ *   返回 { sql: ' AND ...', params: [...] } 或 { sql: '', params: [] }
+ */
+function buildScopeFilter(scope, fieldMap) {
+  if (!scope || scope.dataScope === 'all') return { sql: '', params: [] };
+  if (scope.dataScope === 'site' && scope.scopeId) {
+    // 站点 = 社区, 关联的 warehouse 通过 warehouse_coverage 反查
+    // 优先用直接字段, 没有就用 community_id
+    if (fieldMap.community) {
+      return { sql: ` AND ${fieldMap.community} = ?`, params: [scope.scopeId] };
+    }
+  }
+  // 站点管理员但无 scope_id, 拒绝返回任何数据
+  if (scope && scope.dataScope === 'site' && !scope.scopeId) {
+    return { sql: ' AND 1=0', params: [] };
+  }
+  return { sql: '', params: [] };
+}
 
 /* ==========================================================================
    商品管理
@@ -20,9 +42,22 @@ router.use(authMiddleware);
 router.get('/products', (req, res) => {
   const { page = 1, pageSize = 20, status, categoryId, keyword } = req.query;
   const offset = (page - 1) * pageSize;
+  const scope = req.adminScope;
 
-  let sql = `SELECT s.*, c.name as category_name FROM sku s LEFT JOIN category c ON c.id = s.category_id WHERE 1=1`;
-  const params = [];
+  // 站点管理员: 只能看本社区已配置的商品 (通过 community_sku 关联)
+  let joinClause = '';
+  let scopeWhere = '';
+  const scopeParams = [];
+  if (scope && scope.dataScope === 'site' && scope.scopeId) {
+    joinClause = ` INNER JOIN community_sku cs ON cs.sku_id = s.id`;
+    scopeWhere = ` AND cs.community_id = ?`;
+    scopeParams.push(scope.scopeId);
+  } else if (scope && scope.dataScope === 'site' && !scope.scopeId) {
+    return success(res, { list: [], total: 0, page: parseInt(page), pageSize: parseInt(pageSize) });
+  }
+
+  let sql = `SELECT DISTINCT s.*, c.name as category_name FROM sku s ${joinClause} LEFT JOIN category c ON c.id = s.category_id WHERE 1=1${scopeWhere}`;
+  const params = [...scopeParams];
 
   if (status) { sql += ` AND s.status = ?`; params.push(parseInt(status)); }
   if (categoryId) { sql += ` AND s.category_id = ?`; params.push(parseInt(categoryId)); }
@@ -32,7 +67,14 @@ router.get('/products', (req, res) => {
   params.push(parseInt(pageSize), offset);
 
   const list = db.prepare(sql).all(...params);
-  const totalRow = db.prepare(`SELECT COUNT(*) as total FROM sku s WHERE 1=1${status ? ' AND s.status = ?' : ''}${categoryId ? ' AND s.category_id = ?' : ''}${keyword ? ' AND s.name LIKE ?' : ''}`).get(...params.slice(0, -2));
+
+  // 总数: 用相同 WHERE 重新计数
+  let countSql = `SELECT COUNT(DISTINCT s.id) as total FROM sku s ${joinClause} WHERE 1=1${scopeWhere}`;
+  const countParams = [...scopeParams];
+  if (status) { countSql += ` AND s.status = ?`; countParams.push(parseInt(status)); }
+  if (categoryId) { countSql += ` AND s.category_id = ?`; countParams.push(parseInt(categoryId)); }
+  if (keyword) { countSql += ` AND s.name LIKE ?`; countParams.push('%' + keyword + '%'); }
+  const totalRow = db.prepare(countSql).get(...countParams);
 
   return success(res, { list, total: totalRow.total, page: parseInt(page), pageSize: parseInt(pageSize) });
 });
@@ -98,12 +140,24 @@ router.put('/products/:id/status', (req, res) => {
 router.get('/orders', (req, res) => {
   const { page = 1, pageSize = 20, status, communityId, keyword } = req.query;
   const offset = (page - 1) * pageSize;
+  const scope = req.adminScope;
 
   let sql = `SELECT o.*, u.nick_name, u.phone, c.name as community_name FROM \`order\` o LEFT JOIN user u ON u.id = o.user_id LEFT JOIN community c ON c.id = o.community_id WHERE 1=1`;
   const params = [];
 
+  // 数据范围: 站点管理员只能看本社区订单, 且 communityId 筛选被强制为本站点
+  if (scope && scope.dataScope === 'site') {
+    if (!scope.scopeId) {
+      return success(res, { list: [], total: 0, page: parseInt(page), pageSize: parseInt(pageSize) });
+    }
+    sql += ` AND o.community_id = ?`;
+    params.push(scope.scopeId);
+  } else if (communityId) {
+    sql += ` AND o.community_id = ?`;
+    params.push(parseInt(communityId));
+  }
+
   if (status) { sql += ` AND o.status = ?`; params.push(parseInt(status)); }
-  if (communityId) { sql += ` AND o.community_id = ?`; params.push(parseInt(communityId)); }
   if (keyword) { sql += ` AND (o.order_no LIKE ? OR u.phone LIKE ?)`; params.push('%' + keyword + '%', '%' + keyword + '%'); }
 
   sql += ` ORDER BY o.created_at DESC LIMIT ? OFFSET ?`;
@@ -125,6 +179,18 @@ router.get('/orders', (req, res) => {
  */
 router.get('/reports/overview', (req, res) => {
   const { dateRange = 'today' } = req.query;
+  const scope = req.adminScope;
+
+  // 站点管理员: 限定本社区; user 表无 community_id, 新增用户通过 order 表反查
+  let scopeWhere = '';
+  let scopeParams = [];
+  if (scope && scope.dataScope === 'site') {
+    if (!scope.scopeId) {
+      return success(res, { summary: { totalGmv: '0.00', totalOrders: 0, avgOrderValue: '0.00', totalUsers: 0, newUsers: 0 }, trend: [], categorySales: [] });
+    }
+    scopeWhere = ` AND o.community_id = ?`;
+    scopeParams = [scope.scopeId];
+  }
 
   let dateCondition = '';
   const today = new Date().toISOString().substring(0, 10);
@@ -141,15 +207,25 @@ router.get('/reports/overview', (req, res) => {
       COALESCE(AVG(o.pay_amount), 0) as avg_order_value,
       COUNT(DISTINCT o.user_id) as total_users
     FROM \`order\` o
-    WHERE o.pay_status = 1 ${dateCondition ? 'AND ' + dateCondition : ''}
-  `).get();
+    WHERE o.pay_status = 1 ${dateCondition ? 'AND ' + dateCondition : ''}${scopeWhere}
+  `).get(...scopeParams);
 
-  const newUsers = db.prepare(`SELECT COUNT(*) as cnt FROM user WHERE DATE(created_at) = ?`).get(today);
+  // newUsers: 超管=今天注册的用户数; 站点管理员=今天注册且在本社区下过单的用户数
+  let newUsers;
+  if (scope && scope.dataScope === 'site') {
+    newUsers = db.prepare(`
+      SELECT COUNT(DISTINCT u.id) as cnt
+      FROM user u INNER JOIN \`order\` o ON o.user_id = u.id
+      WHERE DATE(u.created_at) = ? AND o.community_id = ?
+    `).get(today, scope.scopeId);
+  } else {
+    newUsers = db.prepare(`SELECT COUNT(*) as cnt FROM user WHERE DATE(created_at) = ?`).get(today);
+  }
 
   const trend = [];
   for (let i = 6; i >= 0; i--) {
     const d = new Date(Date.now() - i * 86400000).toISOString().substring(0, 10);
-    const r = db.prepare(`SELECT COUNT(*) as orders, COALESCE(SUM(pay_amount), 0) as gmv FROM \`order\` WHERE DATE(created_at) = ? AND pay_status = 1`).get(d);
+    const r = db.prepare(`SELECT COUNT(*) as orders, COALESCE(SUM(pay_amount), 0) as gmv FROM \`order\` WHERE DATE(created_at) = ? AND pay_status = 1${scopeWhere.replace(/o\.community_id/g, 'community_id')}`).get(d, ...scopeParams);
     trend.push({ date: d.substring(5), orders: r.orders, gmv: parseFloat(r.gmv).toFixed(2) });
   }
 
@@ -159,9 +235,9 @@ router.get('/reports/overview', (req, res) => {
     JOIN sku s ON s.id = oi.sku_id
     JOIN category c ON c.id = s.category_id
     JOIN \`order\` o ON o.id = oi.order_id
-    WHERE o.pay_status = 1 ${dateCondition ? 'AND ' + dateCondition : ''}
+    WHERE o.pay_status = 1 ${dateCondition ? 'AND ' + dateCondition : ''}${scopeWhere}
     GROUP BY c.id ORDER BY amount DESC LIMIT 8
-  `).all();
+  `).all(...scopeParams);
 
   return success(res, {
     summary: {
@@ -185,9 +261,15 @@ router.get('/reports/overview', (req, res) => {
  */
 router.get('/leaders', (req, res) => {
   const { status } = req.query;
+  const scope = req.adminScope;
 
   let sql = `SELECT l.*, u.nick_name, u.phone, c.name as community_name, (SELECT COUNT(*) FROM \`order\` o WHERE o.leader_id = l.id) as order_count FROM leader l LEFT JOIN user u ON u.id = l.user_id LEFT JOIN community c ON c.id = l.community_id WHERE 1=1`;
   const params = [];
+  if (scope && scope.dataScope === 'site') {
+    if (!scope.scopeId) return success(res, { list: [] });
+    sql += ` AND l.community_id = ?`;
+    params.push(scope.scopeId);
+  }
   if (status) { sql += ` AND l.status = ?`; params.push(parseInt(status)); }
   sql += ` ORDER BY l.total_commission DESC`;
 
@@ -241,21 +323,37 @@ router.post('/coupons', (req, res) => {
 router.get('/riders', (req, res) => {
   const { status, page = 1, pageSize = 20 } = req.query;
   const offset = (page - 1) * pageSize;
+  const scope = req.adminScope;
+
+  // 站点管理员: 只看本社区关联前置仓的骑手 (通过 warehouse_coverage 反查)
+  let scopeJoin = '';
+  let scopeWhere = '';
+  const scopeParams = [];
+  if (scope && scope.dataScope === 'site') {
+    if (!scope.scopeId) return success(res, { list: [], total: 0, page: parseInt(page), pageSize: parseInt(pageSize) });
+    scopeJoin = ` INNER JOIN warehouse_coverage wc ON wc.warehouse_id = r.warehouse_id`;
+    scopeWhere = ` AND wc.community_id = ?`;
+    scopeParams.push(scope.scopeId);
+  }
 
   let sql = `
-    SELECT r.*, w.name as warehouse_name
+    SELECT DISTINCT r.*, w.name as warehouse_name
     FROM rider r
+    ${scopeJoin}
     LEFT JOIN warehouse w ON w.id = r.warehouse_id
-    WHERE 1=1
+    WHERE 1=1${scopeWhere}
   `;
-  const params = [];
+  const params = [...scopeParams];
 
   if (status) {
     sql += ' AND r.status = ?';
     params.push(parseInt(status));
   }
 
-  const { total } = db.prepare(`SELECT COUNT(*) as total FROM rider r WHERE 1=1${status ? ' AND r.status = ?' : ''}`).get(...(status ? [parseInt(status)] : []));
+  const countSql = `SELECT COUNT(DISTINCT r.id) as total FROM rider r ${scopeJoin} WHERE 1=1${scopeWhere}${status ? ' AND r.status = ?' : ''}`;
+  const countParams = [...scopeParams];
+  if (status) countParams.push(parseInt(status));
+  const { total } = db.prepare(countSql).get(...countParams);
 
   sql += ' ORDER BY r.created_at DESC LIMIT ? OFFSET ?';
   params.push(parseInt(pageSize), offset);
@@ -291,16 +389,17 @@ router.get('/riders', (req, res) => {
  * POST /api/v1/admin/riders
  */
 router.post('/riders', (req, res) => {
-  const { name, phone, warehouseId } = req.body;
+  const { name, phone, warehouseId, password } = req.body;
 
   if (!name || !warehouseId) {
     return error(res, '姓名和前置仓不能为空', 400);
   }
 
+  const passwordHash = password ? bcrypt.hashSync(password, 10) : bcrypt.hashSync('123456', 10);
   const result = db.prepare(`
-    INSERT INTO rider (name, phone, warehouse_id, status, current_orders, created_at, updated_at)
-    VALUES (?, ?, ?, 1, 0, datetime('now'), datetime('now'))
-  `).run(name, phone || '', warehouseId);
+    INSERT INTO rider (name, phone, warehouse_id, password_hash, status, current_orders, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 1, 0, datetime('now'), datetime('now'))
+  `).run(name, phone || '', warehouseId, passwordHash);
 
   return success(res, { id: result.lastInsertRowid }, '骑手添加成功');
 });
@@ -325,27 +424,43 @@ router.put('/riders/:id/status', (req, res) => {
 router.get('/inventory', (req, res) => {
   const { warehouseId, page = 1, pageSize = 20 } = req.query;
   const offset = (page - 1) * pageSize;
+  const scope = req.adminScope;
+
+  // 站点管理员: 限定本社区关联的前置仓 (warehouse_coverage)
+  let scopeJoin = '';
+  let scopeWhere = '';
+  const scopeParams = [];
+  if (scope && scope.dataScope === 'site') {
+    if (!scope.scopeId) return success(res, { list: [], total: 0, page: parseInt(page), pageSize: parseInt(pageSize) });
+    scopeJoin = ` INNER JOIN warehouse_coverage wc ON wc.warehouse_id = i.warehouse_id`;
+    scopeWhere = ` AND wc.community_id = ?`;
+    scopeParams.push(scope.scopeId);
+  }
 
   let sql = `
-    SELECT i.id, i.available_stock, i.locked_stock, i.warning_threshold, i.updated_at,
+    SELECT DISTINCT i.id, i.available_stock, i.locked_stock, i.warning_threshold, i.updated_at,
            s.name as sku_name, s.main_image, s.unit, s.sale_price, s.status as sku_status,
            w.name as warehouse_name,
            c.name as category_name
     FROM inventory i
+    ${scopeJoin}
     INNER JOIN sku s ON s.id = i.sku_id
     INNER JOIN warehouse w ON w.id = i.warehouse_id
     LEFT JOIN category c ON c.id = s.category_id
-    WHERE 1=1
+    WHERE 1=1${scopeWhere}
   `;
-  const params = [];
+  const params = [...scopeParams];
 
+  // 站点管理员的 warehouseId 筛选必须是本社区关联的前置仓之一
   if (warehouseId) {
     sql += ' AND i.warehouse_id = ?';
     params.push(parseInt(warehouseId));
   }
 
-  const countSql = `SELECT COUNT(*) as total FROM inventory i WHERE 1=1${warehouseId ? ' AND i.warehouse_id = ?' : ''}`;
-  const { total } = db.prepare(countSql).get(...(warehouseId ? [parseInt(warehouseId)] : []));
+  const countSql = `SELECT COUNT(DISTINCT i.id) as total FROM inventory i ${scopeJoin} WHERE 1=1${scopeWhere}${warehouseId ? ' AND i.warehouse_id = ?' : ''}`;
+  const countParams = [...scopeParams];
+  if (warehouseId) countParams.push(parseInt(warehouseId));
+  const { total } = db.prepare(countSql).get(...countParams);
 
   sql += ' ORDER BY i.updated_at DESC LIMIT ? OFFSET ?';
   params.push(parseInt(pageSize), offset);
@@ -421,7 +536,7 @@ router.post('/login', (req, res) => {
   }
 
   const admin = db.prepare(`
-    SELECT a.*, r.name as role_name, r.permissions
+    SELECT a.*, r.name as role_name, r.permissions, r.data_scope
     FROM admin_user a
     LEFT JOIN admin_role r ON r.id = a.role_id
     WHERE a.username = ?
@@ -445,6 +560,7 @@ router.post('/login', (req, res) => {
   let permissions = [];
   try { permissions = JSON.parse(admin.permissions || '[]'); } catch (e) {}
 
+  const dataScope = admin.data_scope || 'all';
   return success(res, {
     token,
     admin: {
@@ -453,7 +569,9 @@ router.post('/login', (req, res) => {
       realName: admin.real_name,
       roleId: admin.role_id,
       roleName: admin.role_name,
-      permissions
+      permissions,
+      dataScope,
+      scopeId: admin.scope_id
     }
   }, '登录成功');
 });
@@ -467,8 +585,16 @@ router.post('/login', (req, res) => {
  */
 router.get('/banners', (req, res) => {
   const { status } = req.query;
+  const scope = req.adminScope;
   let sql = `SELECT * FROM banner WHERE 1=1`;
   const params = [];
+
+  // 站点管理员: 看全站 Banner (community_ids 为空) 或 community_ids 含本社区 ID
+  if (scope && scope.dataScope === 'site') {
+    if (!scope.scopeId) return success(res, { list: [] });
+    sql += ` AND (community_ids IS NULL OR community_ids = '' OR (',' || community_ids || ',') LIKE ?)`;
+    params.push(`%,${scope.scopeId},%`);
+  }
   if (status !== undefined && status !== '') {
     sql += ` AND status = ?`;
     params.push(parseInt(status));
@@ -746,14 +872,27 @@ router.put('/leader-applications/:id/reject', (req, res) => {
 router.get('/finance/records', (req, res) => {
   const { type, page = 1, pageSize = 20 } = req.query;
   const offset = (page - 1) * pageSize;
-  let sql = `SELECT fr.*, o.order_no FROM finance_record fr LEFT JOIN \`order\` o ON o.id = fr.order_id WHERE 1=1`;
-  const params = [];
+  const scope = req.adminScope;
+
+  // 站点管理员: 通过 order_id JOIN \`order\` 过滤 community_id
+  let scopeWhere = '';
+  const scopeParams = [];
+  if (scope && scope.dataScope === 'site') {
+    if (!scope.scopeId) return success(res, { list: [], total: 0, page: parseInt(page), pageSize: parseInt(pageSize) });
+    scopeWhere = ` AND o.community_id = ?`;
+    scopeParams.push(scope.scopeId);
+  }
+
+  let sql = `SELECT fr.*, o.order_no FROM finance_record fr LEFT JOIN \`order\` o ON o.id = fr.order_id WHERE 1=1${scopeWhere}`;
+  const params = [...scopeParams];
   if (type) {
     sql += ` AND fr.type = ?`;
     params.push(type);
   }
-  const countSql = `SELECT COUNT(*) as total FROM finance_record fr WHERE 1=1${type ? ' AND fr.type = ?' : ''}`;
-  const { total } = db.prepare(countSql).get(...(type ? [type] : []));
+  const countSql = `SELECT COUNT(*) as total FROM finance_record fr LEFT JOIN \`order\` o ON o.id = fr.order_id WHERE 1=1${scopeWhere}${type ? ' AND fr.type = ?' : ''}`;
+  const countParams = [...scopeParams];
+  if (type) countParams.push(type);
+  const { total } = db.prepare(countSql).get(...countParams);
   sql += ` ORDER BY fr.created_at DESC LIMIT ? OFFSET ?`;
   params.push(parseInt(pageSize), offset);
   const list = db.prepare(sql).all(...params);
@@ -765,28 +904,45 @@ router.get('/finance/records', (req, res) => {
  */
 router.get('/finance/summary', (req, res) => {
   const { dateRange = 'today' } = req.query;
+  const scope = req.adminScope;
+
   let dateCondition = '';
-  if (dateRange === 'today') dateCondition = `DATE(created_at) = DATE('now')`;
-  else if (dateRange === 'yesterday') dateCondition = `DATE(created_at) = DATE('now', '-1 day')`;
-  else if (dateRange === 'last7days') dateCondition = `created_at >= datetime('now', '-7 days')`;
+  if (dateRange === 'today') dateCondition = `DATE(fr.created_at) = DATE('now')`;
+  else if (dateRange === 'yesterday') dateCondition = `DATE(fr.created_at) = DATE('now', '-1 day')`;
+  else if (dateRange === 'last7days') dateCondition = `fr.created_at >= datetime('now', '-7 days')`;
+
+  // 站点管理员: 通过 JOIN \`order\` 过滤本社区
+  let scopeJoin = '';
+  let scopeWhere = '';
+  const scopeParams = [];
+  if (scope && scope.dataScope === 'site') {
+    if (!scope.scopeId) {
+      return success(res, { totalIncome: '0.00', totalOutcome: '0.00', netIncome: '0.00', totalRecords: 0, byType: [] });
+    }
+    scopeJoin = ` LEFT JOIN \`order\` o ON o.id = fr.order_id`;
+    scopeWhere = ` AND o.community_id = ?`;
+    scopeParams.push(scope.scopeId);
+  }
 
   const summary = db.prepare(`
     SELECT
-      COALESCE(SUM(CASE WHEN direction = 'in' THEN amount ELSE 0 END), 0) as total_income,
-      COALESCE(SUM(CASE WHEN direction = 'out' THEN amount ELSE 0 END), 0) as total_outcome,
+      COALESCE(SUM(CASE WHEN fr.direction = 'in' THEN fr.amount ELSE 0 END), 0) as total_income,
+      COALESCE(SUM(CASE WHEN fr.direction = 'out' THEN fr.amount ELSE 0 END), 0) as total_outcome,
       COUNT(*) as total_records
-    FROM finance_record
-    ${dateCondition ? 'WHERE ' + dateCondition : ''}
-  `).get();
+    FROM finance_record fr
+    ${scopeJoin}
+    WHERE 1=1${scopeWhere}${dateCondition ? ' AND ' + dateCondition : ''}
+  `).get(...scopeParams);
 
   const byType = db.prepare(`
-    SELECT type,
-      COALESCE(SUM(CASE WHEN direction = 'in' THEN amount ELSE 0 END), 0) as income,
-      COALESCE(SUM(CASE WHEN direction = 'out' THEN amount ELSE 0 END), 0) as outcome
-    FROM finance_record
-    ${dateCondition ? 'WHERE ' + dateCondition : ''}
-    GROUP BY type
-  `).all();
+    SELECT fr.type,
+      COALESCE(SUM(CASE WHEN fr.direction = 'in' THEN fr.amount ELSE 0 END), 0) as income,
+      COALESCE(SUM(CASE WHEN fr.direction = 'out' THEN fr.amount ELSE 0 END), 0) as outcome
+    FROM finance_record fr
+    ${scopeJoin}
+    WHERE 1=1${scopeWhere}${dateCondition ? ' AND ' + dateCondition : ''}
+    GROUP BY fr.type
+  `).all(...scopeParams);
 
   return success(res, {
     totalIncome: parseFloat(summary.total_income).toFixed(2),
@@ -799,9 +955,14 @@ router.get('/finance/summary', (req, res) => {
 
 /**
  * POST /api/v1/admin/finance/reconcile
- * 手动对账: 比对支付流水与订单总额
+ * 手动对账: 比对支付流水与订单总额 (仅超级管理员可用)
  */
 router.post('/finance/reconcile', (req, res) => {
+  const scope = req.adminScope;
+  if (scope && scope.dataScope === 'site') {
+    return error(res, '站点管理员无权执行全平台对账', 403);
+  }
+
   const orderTotals = db.prepare(`
     SELECT COALESCE(SUM(pay_amount), 0) as total_paid, COUNT(*) as order_count
     FROM \`order\` WHERE pay_status = 1
@@ -831,43 +992,72 @@ router.post('/finance/reconcile', (req, res) => {
  * GET /api/v1/admin/reports/users
  */
 router.get('/reports/users', (req, res) => {
-  // 7天新增用户趋势
+  const scope = req.adminScope;
+
+  // 站点管理员: "本社区用户" = 在本社区下过单的 DISTINCT user_id (user 表无 community_id)
+  let userFilterSql = `FROM user u`;
+  let userFilterWhere = '';
+  const userFilterParams = [];
+  let orderJoinForRevenue = '';
+  let orderScopeWhere = '';
+  const orderScopeParams = [];
+  if (scope && scope.dataScope === 'site') {
+    if (!scope.scopeId) {
+      return success(res, { newUsersTrend: [], retention: { day1: 0, day7: 0, day30: 0 }, sourceDistribution: [], totalUsers: 0, ltv: 0, totalRevenue: '0.00' });
+    }
+    userFilterSql = `FROM user u INNER JOIN \`order\` o ON o.user_id = u.id`;
+    userFilterWhere = ` AND o.community_id = ?`;
+    userFilterParams.push(scope.scopeId);
+    orderJoinForRevenue = ` INNER JOIN \`order\` o ON o.user_id = u.id`;
+    orderScopeWhere = ` AND o.community_id = ?`;
+    orderScopeParams.push(scope.scopeId);
+  }
+
+  // 7天新增用户趋势 (按 DISTINCT u.id 计数, 避免站点管理员因多次下单重复计)
   const newUsersTrend = [];
   for (let i = 6; i >= 0; i--) {
     const d = new Date(Date.now() - i * 86400000).toISOString().substring(0, 10);
-    const r = db.prepare(`SELECT COUNT(*) as cnt FROM user WHERE DATE(created_at) = ?`).get(d);
+    const r = db.prepare(`SELECT COUNT(DISTINCT u.id) as cnt ${userFilterSql} WHERE DATE(u.created_at) = ?${userFilterWhere}`).get(d, ...userFilterParams);
     newUsersTrend.push({ date: d.substring(5), count: r.cnt });
   }
 
   // 用户来源分布
   const sourceDistribution = db.prepare(`
-    SELECT source, COUNT(*) as count FROM user GROUP BY source ORDER BY count DESC
-  `).all();
+    SELECT u.source, COUNT(DISTINCT u.id) as count
+    ${userFilterSql}
+    WHERE 1=1${userFilterWhere}
+    GROUP BY u.source ORDER BY count DESC
+  `).all(...userFilterParams);
 
   // 留存率 (1d/7d/30d)
   const retention = {};
   [1, 7, 30].forEach(days => {
     const date = new Date(Date.now() - days * 86400000).toISOString().substring(0, 10);
-    const baseUsers = db.prepare(`SELECT id FROM user WHERE DATE(created_at) <= ?`).all(date);
+    const baseUsers = db.prepare(`SELECT DISTINCT u.id ${userFilterSql} WHERE DATE(u.created_at) <= ?${userFilterWhere}`).all(date, ...userFilterParams);
     if (!baseUsers.length) {
       retention[`d${days}`] = 0;
       return;
     }
     const ids = baseUsers.map(u => u.id);
     const placeholders = ids.map(() => '?').join(',');
-    const activeUsers = db.prepare(`
-      SELECT COUNT(DISTINCT user_id) as cnt FROM \`order\`
-      WHERE user_id IN (${placeholders}) AND DATE(created_at) >= ?
-    `).get(...ids, date);
+    let activeSql = `SELECT COUNT(DISTINCT user_id) as cnt FROM \`order\` WHERE user_id IN (${placeholders}) AND DATE(created_at) >= ?`;
+    const activeParams = [...ids, date];
+    if (scope && scope.dataScope === 'site') {
+      activeSql += ` AND community_id = ?`;
+      activeParams.push(scope.scopeId);
+    }
+    const activeUsers = db.prepare(activeSql).get(...activeParams);
     retention[`d${days}`] = parseFloat((activeUsers.cnt / baseUsers.length * 100).toFixed(2));
   });
 
-  // LTV 计算 (人均生命周期价值)
-  const totalUsersRow = db.prepare(`SELECT COUNT(*) as cnt FROM user`).get();
+  // LTV 计算 (人均生命周期价值, 站点管理员按本社区订单总收入/本社区用户数)
+  const totalUsersRow = db.prepare(`SELECT COUNT(DISTINCT u.id) as cnt ${userFilterSql} WHERE 1=1${userFilterWhere}`).get(...userFilterParams);
   const totalUsers = totalUsersRow.cnt;
   const ltvRow = db.prepare(`
-    SELECT COALESCE(SUM(pay_amount), 0) as total_revenue FROM \`order\` WHERE pay_status = 1
-  `).get();
+    SELECT COALESCE(SUM(o.pay_amount), 0) as total_revenue
+    FROM user u ${orderJoinForRevenue}
+    WHERE o.pay_status = 1${orderScopeWhere}
+  `).get(...orderScopeParams);
   const ltvValue = totalUsers ? parseFloat((ltvRow.total_revenue / totalUsers).toFixed(2)) : 0;
 
   return success(res, {
@@ -1020,15 +1210,23 @@ router.get('/riders/:id/performance', (req, res) => {
  * 待调度订单 (status=20 已支付待分配骑手)
  */
 router.get('/orders/dispatch', (req, res) => {
+  const scope = req.adminScope;
+  let scopeWhere = '';
+  const scopeParams = [];
+  if (scope && scope.dataScope === 'site') {
+    if (!scope.scopeId) return success(res, { list: [], total: 0 });
+    scopeWhere = ` AND o.community_id = ?`;
+    scopeParams.push(scope.scopeId);
+  }
   const list = db.prepare(`
     SELECT o.*, u.nick_name, u.phone, c.name as community_name, w.name as warehouse_name
     FROM \`order\` o
     LEFT JOIN user u ON u.id = o.user_id
     LEFT JOIN community c ON c.id = o.community_id
     LEFT JOIN warehouse w ON w.id = o.warehouse_id
-    WHERE o.status = 20
+    WHERE o.status = 20${scopeWhere}
     ORDER BY o.created_at ASC
-  `).all();
+  `).all(...scopeParams);
   const itemStmt = db.prepare(`SELECT * FROM order_item WHERE order_id = ?`);
   list.forEach(o => { o.items = itemStmt.all(o.id); });
   return success(res, { list, total: list.length });
@@ -1101,13 +1299,190 @@ router.post('/orders/:id/cancel', (req, res) => {
 });
 
 /* ==========================================================================
-   管理员角色 & 用户管理 (RBAC)
+   前台用户管理 (C端注册用户)
+   ========================================================================== */
+
+/**
+ * GET /api/v1/admin/users
+ * 前台用户列表 (分页/搜索/筛选, 站点管理员只看本社区下单用户)
+ */
+router.get('/users', (req, res) => {
+  const { page = 1, pageSize = 20, keyword, status, memberLevel, source } = req.query;
+  const offset = (page - 1) * pageSize;
+  const scope = req.adminScope;
+
+  // 站点管理员: user 表无 community_id, 通过 order 反查本社区下单用户
+  let scopeJoin = '';
+  let scopeWhere = '';
+  const scopeParams = [];
+  if (scope && scope.dataScope === 'site') {
+    if (!scope.scopeId) return success(res, { list: [], total: 0, page: parseInt(page), pageSize: parseInt(pageSize) });
+    scopeJoin = ` INNER JOIN (SELECT DISTINCT user_id, community_id FROM \`order\`) ox ON ox.user_id = u.id`;
+    scopeWhere = ` AND ox.community_id = ?`;
+    scopeParams.push(scope.scopeId);
+  }
+
+  let sql = `SELECT DISTINCT u.id, u.phone, u.nick_name, u.avatar_url, u.member_level, u.total_consume, u.order_count, u.points, u.source, u.status, u.last_login_at, u.created_at FROM user u ${scopeJoin} WHERE 1=1${scopeWhere}`;
+  const params = [...scopeParams];
+
+  if (keyword) {
+    sql += ` AND (u.phone LIKE ? OR u.nick_name LIKE ?)`;
+    params.push('%' + keyword + '%', '%' + keyword + '%');
+  }
+  if (status !== undefined && status !== '') {
+    sql += ` AND u.status = ?`;
+    params.push(parseInt(status));
+  }
+  if (memberLevel) {
+    sql += ` AND u.member_level = ?`;
+    params.push(parseInt(memberLevel));
+  }
+  if (source) {
+    sql += ` AND u.source = ?`;
+    params.push(source);
+  }
+
+  // 计数 (DISTINCT u.id)
+  let countSql = `SELECT COUNT(DISTINCT u.id) as total FROM user u ${scopeJoin} WHERE 1=1${scopeWhere}`;
+  const countParams = [...scopeParams];
+  if (keyword) { countSql += ` AND (u.phone LIKE ? OR u.nick_name LIKE ?)`; countParams.push('%' + keyword + '%', '%' + keyword + '%'); }
+  if (status !== undefined && status !== '') { countSql += ` AND u.status = ?`; countParams.push(parseInt(status)); }
+  if (memberLevel) { countSql += ` AND u.member_level = ?`; countParams.push(parseInt(memberLevel)); }
+  if (source) { countSql += ` AND u.source = ?`; countParams.push(source); }
+  const totalRow = db.prepare(countSql).get(...countParams);
+
+  sql += ` ORDER BY u.created_at DESC LIMIT ? OFFSET ?`;
+  params.push(parseInt(pageSize), offset);
+
+  const list = db.prepare(sql).all(...params);
+  return success(res, { list, total: totalRow.total, page: parseInt(page), pageSize: parseInt(pageSize) });
+});
+
+/**
+ * GET /api/v1/admin/users/:id
+ * 前台用户详情 (基本信息 + 订单列表 + 收货地址)
+ */
+router.get('/users/:id', (req, res) => {
+  const { id } = req.params;
+  const scope = req.adminScope;
+
+  const user = db.prepare(`SELECT id, phone, nick_name, avatar_url, email, member_level, total_consume, order_count, points, source, status, last_login_at, created_at FROM user WHERE id = ?`).get(id);
+  if (!user) return error(res, '用户不存在', 404);
+
+  // 站点管理员: 校验该用户是否在自己社区下过单
+  if (scope && scope.dataScope === 'site') {
+    if (!scope.scopeId) return error(res, '无权查看', 403);
+    const inScope = db.prepare(`SELECT 1 FROM \`order\` WHERE user_id = ? AND community_id = ? LIMIT 1`).get(id, scope.scopeId);
+    if (!inScope) return error(res, '无权查看该用户 (非本社区用户)', 403);
+  }
+
+  // 订单列表 (站点管理员只看本社区订单)
+  let orderWhere = '';
+  const orderParams = [id];
+  if (scope && scope.dataScope === 'site') { orderWhere = ` AND community_id = ?`; orderParams.push(scope.scopeId); }
+  const orders = db.prepare(`SELECT id, order_no, status, pay_amount, pay_status, created_at FROM \`order\` WHERE user_id = ?${orderWhere} ORDER BY created_at DESC LIMIT 50`).all(...orderParams);
+
+  // 收货地址
+  const addresses = db.prepare(`SELECT * FROM user_address WHERE user_id = ? ORDER BY is_default DESC, id DESC`).all(id);
+
+  return success(res, { user, orders, addresses });
+});
+
+/**
+ * PUT /api/v1/admin/users/:id
+ * 编辑前台用户 (昵称/邮箱/会员等级/积分)
+ */
+router.put('/users/:id', (req, res) => {
+  const { id } = req.params;
+  const { nickName, email, memberLevel, points } = req.body;
+  const scope = req.adminScope;
+
+  const existing = db.prepare(`SELECT id FROM user WHERE id = ?`).get(id);
+  if (!existing) return error(res, '用户不存在', 404);
+
+  if (scope && scope.dataScope === 'site') {
+    if (!scope.scopeId) return error(res, '无权操作', 403);
+    const inScope = db.prepare(`SELECT 1 FROM \`order\` WHERE user_id = ? AND community_id = ? LIMIT 1`).get(id, scope.scopeId);
+    if (!inScope) return error(res, '无权操作该用户 (非本社区用户)', 403);
+  }
+
+  const updates = [];
+  const params = [];
+  if (nickName !== undefined) { updates.push('nick_name = ?'); params.push(nickName); }
+  if (email !== undefined) { updates.push('email = ?'); params.push(email); }
+  if (memberLevel !== undefined) { updates.push('member_level = ?'); params.push(parseInt(memberLevel)); }
+  if (points !== undefined) { updates.push('points = ?'); params.push(parseInt(points)); }
+  if (!updates.length) return error(res, '没有需要更新的字段', 400);
+
+  updates.push('updated_at = ?');
+  params.push(now(), id);
+  db.prepare(`UPDATE user SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+  return success(res, { id: parseInt(id) }, '用户信息已更新');
+});
+
+/**
+ * PUT /api/v1/admin/users/:id/status
+ * 启用/禁用前台用户 (status: 1=启用, 0=禁用)
+ */
+router.put('/users/:id/status', (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+  const scope = req.adminScope;
+
+  if (status !== 0 && status !== 1) return error(res, 'status 取值非法', 400);
+
+  const existing = db.prepare(`SELECT id FROM user WHERE id = ?`).get(id);
+  if (!existing) return error(res, '用户不存在', 404);
+
+  if (scope && scope.dataScope === 'site') {
+    if (!scope.scopeId) return error(res, '无权操作', 403);
+    const inScope = db.prepare(`SELECT 1 FROM \`order\` WHERE user_id = ? AND community_id = ? LIMIT 1`).get(id, scope.scopeId);
+    if (!inScope) return error(res, '无权操作该用户 (非本社区用户)', 403);
+  }
+
+  db.prepare(`UPDATE user SET status = ?, updated_at = ? WHERE id = ?`).run(status, now(), id);
+  return success(res, { id: parseInt(id), status }, '用户状态已更新');
+});
+
+/**
+ * POST /api/v1/admin/users/:id/reset-password
+ * 重置前台用户密码 (管理员重置为指定新密码)
+ */
+router.post('/users/:id/reset-password', (req, res) => {
+  const { id } = req.params;
+  const { newPassword } = req.body;
+  const scope = req.adminScope;
+
+  if (!newPassword || newPassword.length < 6) {
+    return error(res, '新密码长度不能少于6位', 400);
+  }
+
+  const existing = db.prepare(`SELECT id FROM user WHERE id = ?`).get(id);
+  if (!existing) return error(res, '用户不存在', 404);
+
+  if (scope && scope.dataScope === 'site') {
+    if (!scope.scopeId) return error(res, '无权操作', 403);
+    const inScope = db.prepare(`SELECT 1 FROM \`order\` WHERE user_id = ? AND community_id = ? LIMIT 1`).get(id, scope.scopeId);
+    if (!inScope) return error(res, '无权操作该用户 (非本社区用户)', 403);
+  }
+
+  const hash = bcrypt.hashSync(newPassword, 10);
+  db.prepare(`UPDATE user SET password_hash = ?, updated_at = ? WHERE id = ?`).run(hash, now(), id);
+  return success(res, { id: parseInt(id) }, '密码已重置');
+});
+
+/* ==========================================================================
+   管理员角色 & 用户管理 (RBAC) - 仅超级管理员可用
    ========================================================================== */
 
 /**
  * GET /api/v1/admin/roles
  */
 router.get('/roles', (req, res) => {
+  const scope = req.adminScope;
+  if (scope && scope.dataScope === 'site') {
+    return error(res, '站点管理员无权管理角色', 403);
+  }
   const list = db.prepare(`
     SELECT r.*, (SELECT COUNT(*) FROM admin_user a WHERE a.role_id = r.id) as user_count
     FROM admin_role r ORDER BY r.id ASC
@@ -1119,13 +1494,19 @@ router.get('/roles', (req, res) => {
  * POST /api/v1/admin/roles
  */
 router.post('/roles', (req, res) => {
-  const { name, permissions } = req.body;
+  const scope = req.adminScope;
+  if (scope && scope.dataScope === 'site') {
+    return error(res, '站点管理员无权管理角色', 403);
+  }
+  const { name, permissions, dataScope: scopeField } = req.body;
   if (!name) {
     return error(res, '角色名称不能为空', 400);
   }
   const permStr = Array.isArray(permissions) ? JSON.stringify(permissions) : (permissions || '[]');
-  const result = db.prepare(`INSERT INTO admin_role (name, permissions, created_at, updated_at) VALUES (?, ?, ?, ?)`)
-    .run(name, permStr, now(), now());
+  // 仅允许创建 all 或 site 两类角色
+  const dataScopeVal = scopeField === 'site' ? 'site' : 'all';
+  const result = db.prepare(`INSERT INTO admin_role (name, permissions, data_scope, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`)
+    .run(name, permStr, dataScopeVal, now(), now());
   return success(res, { id: result.lastInsertRowid }, '角色创建成功');
 });
 
@@ -1133,14 +1514,21 @@ router.post('/roles', (req, res) => {
  * PUT /api/v1/admin/roles/:id
  */
 router.put('/roles/:id', (req, res) => {
+  const scope = req.adminScope;
+  if (scope && scope.dataScope === 'site') {
+    return error(res, '站点管理员无权管理角色', 403);
+  }
   const { id } = req.params;
-  const { name, permissions } = req.body;
+  const { name, permissions, dataScope: scopeField } = req.body;
   const updates = [];
   const params = [];
   if (name !== undefined) { updates.push('name = ?'); params.push(name); }
   if (permissions !== undefined) {
     const permStr = Array.isArray(permissions) ? JSON.stringify(permissions) : (permissions || '[]');
     updates.push('permissions = ?'); params.push(permStr);
+  }
+  if (scopeField !== undefined) {
+    updates.push('data_scope = ?'); params.push(scopeField === 'site' ? 'site' : 'all');
   }
   if (!updates.length) {
     return error(res, '没有需要更新的字段', 400);
@@ -1155,11 +1543,17 @@ router.put('/roles/:id', (req, res) => {
  * GET /api/v1/admin/admin-users
  */
 router.get('/admin-users', (req, res) => {
+  const scope = req.adminScope;
+  if (scope && scope.dataScope === 'site') {
+    return error(res, '站点管理员无权查看管理员列表', 403);
+  }
   const list = db.prepare(`
-    SELECT a.id, a.username, a.real_name, a.role_id, a.status, a.created_at,
-           r.name as role_name, r.permissions
+    SELECT a.id, a.username, a.real_name, a.role_id, a.scope_id, a.status, a.created_at,
+           r.name as role_name, r.permissions, r.data_scope,
+           c.name as scope_community_name
     FROM admin_user a
     LEFT JOIN admin_role r ON r.id = a.role_id
+    LEFT JOIN community c ON c.id = a.scope_id
     ORDER BY a.id ASC
   `).all();
   return success(res, { list });
@@ -1169,9 +1563,18 @@ router.get('/admin-users', (req, res) => {
  * POST /api/v1/admin/admin-users
  */
 router.post('/admin-users', (req, res) => {
-  const { username, password, realName, roleId } = req.body;
+  const scope = req.adminScope;
+  if (scope && scope.dataScope === 'site') {
+    return error(res, '站点管理员无权创建管理员账号', 403);
+  }
+  const { username, password, realName, roleId, scopeId } = req.body;
   if (!username || !password) {
     return error(res, '用户名和密码不能为空', 400);
+  }
+  // 校验: 站点管理员角色必须传 scopeId
+  const role = roleId ? db.prepare(`SELECT data_scope FROM admin_role WHERE id = ?`).get(roleId) : null;
+  if (role && role.data_scope === 'site' && !scopeId) {
+    return error(res, '站点管理员角色必须绑定一个社区 (scopeId)', 400);
   }
   const existing = db.prepare(`SELECT id FROM admin_user WHERE username = ?`).get(username);
   if (existing) {
@@ -1179,9 +1582,9 @@ router.post('/admin-users', (req, res) => {
   }
   const hash = bcrypt.hashSync(password, 12);
   const result = db.prepare(`
-    INSERT INTO admin_user (username, password, real_name, role_id, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, 1, ?, ?)
-  `).run(username, hash, realName || '', roleId || null, now(), now());
+    INSERT INTO admin_user (username, password, real_name, role_id, scope_id, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+  `).run(username, hash, realName || '', roleId || null, (role && role.data_scope === 'site') ? scopeId : null, now(), now());
   return success(res, { id: result.lastInsertRowid }, '管理员账号创建成功');
 });
 
@@ -1189,10 +1592,111 @@ router.post('/admin-users', (req, res) => {
  * PUT /api/v1/admin/admin-users/:id/status
  */
 router.put('/admin-users/:id/status', (req, res) => {
+  const scope = req.adminScope;
+  if (scope && scope.dataScope === 'site') {
+    return error(res, '站点管理员无权修改管理员状态', 403);
+  }
   const { id } = req.params;
   const { status } = req.body;
+  if (status !== 0 && status !== 1) return error(res, 'status 取值非法', 400);
+  const existing = db.prepare(`SELECT id FROM admin_user WHERE id = ?`).get(id);
+  if (!existing) return error(res, '管理员不存在', 404);
   db.prepare(`UPDATE admin_user SET status = ?, updated_at = ? WHERE id = ?`).run(status, now(), id);
   return success(res, { id: parseInt(id), status }, '状态已更新');
+});
+
+/**
+ * PUT /api/v1/admin/admin-users/:id
+ * 编辑管理员账号 (姓名/角色/绑定社区)
+ */
+router.put('/admin-users/:id', (req, res) => {
+  const scope = req.adminScope;
+  if (scope && scope.dataScope === 'site') {
+    return error(res, '站点管理员无权编辑管理员账号', 403);
+  }
+  const { id } = req.params;
+  const { realName, roleId, scopeId } = req.body;
+
+  const existing = db.prepare(`SELECT id FROM admin_user WHERE id = ?`).get(id);
+  if (!existing) return error(res, '管理员不存在', 404);
+
+  // 校验角色和 scopeId 一致性
+  let finalScopeId = null;
+  if (roleId) {
+    const role = db.prepare(`SELECT data_scope FROM admin_role WHERE id = ?`).get(roleId);
+    if (!role) return error(res, '角色不存在', 400);
+    if (role.data_scope === 'site') {
+      if (!scopeId) return error(res, '站点管理员角色必须绑定一个社区 (scopeId)', 400);
+      finalScopeId = scopeId;
+    }
+  }
+
+  const updates = [];
+  const params = [];
+  if (realName !== undefined) { updates.push('real_name = ?'); params.push(realName); }
+  if (roleId !== undefined) {
+    updates.push('role_id = ?'); params.push(roleId || null);
+    updates.push('scope_id = ?'); params.push(finalScopeId);
+  }
+  if (!updates.length) return error(res, '没有需要更新的字段', 400);
+
+  updates.push('updated_at = ?');
+  params.push(now(), id);
+  db.prepare(`UPDATE admin_user SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+  return success(res, { id: parseInt(id) }, '管理员账号已更新');
+});
+
+/**
+ * PUT /api/v1/admin/admin-users/:id/password
+ * 修改管理员密码 (超管重置其他管理员的密码)
+ */
+router.put('/admin-users/:id/password', (req, res) => {
+  const scope = req.adminScope;
+  if (scope && scope.dataScope === 'site') {
+    return error(res, '站点管理员无权修改管理员密码', 403);
+  }
+  const { id } = req.params;
+  const { newPassword } = req.body;
+  if (!newPassword || newPassword.length < 6) {
+    return error(res, '新密码长度不能少于6位', 400);
+  }
+  const existing = db.prepare(`SELECT id FROM admin_user WHERE id = ?`).get(id);
+  if (!existing) return error(res, '管理员不存在', 404);
+
+  const hash = bcrypt.hashSync(newPassword, 12);
+  db.prepare(`UPDATE admin_user SET password = ?, updated_at = ? WHERE id = ?`).run(hash, now(), id);
+  return success(res, { id: parseInt(id) }, '密码已修改');
+});
+
+/**
+ * DELETE /api/v1/admin/admin-users/:id
+ * 删除管理员账号 (不能删自己, 不能删除最后一个超级管理员)
+ */
+router.delete('/admin-users/:id', (req, res) => {
+  const scope = req.adminScope;
+  if (scope && scope.dataScope === 'site') {
+    return error(res, '站点管理员无权删除管理员账号', 403);
+  }
+  const { id } = req.params;
+  const adminId = req.adminId;
+
+  if (parseInt(id) === parseInt(adminId)) {
+    return error(res, '不能删除当前登录的管理员账号', 400);
+  }
+
+  const target = db.prepare(`SELECT a.id, r.data_scope FROM admin_user a LEFT JOIN admin_role r ON r.id = a.role_id WHERE a.id = ?`).get(id);
+  if (!target) return error(res, '管理员不存在', 404);
+
+  // 如果删除的是超级管理员, 检查是否还有其他超级管理员
+  if (target.data_scope === 'all') {
+    const remainingSuper = db.prepare(`SELECT COUNT(*) as cnt FROM admin_user a LEFT JOIN admin_role r ON r.id = a.role_id WHERE r.data_scope = 'all' AND a.id != ?`).get(id);
+    if (remainingSuper.cnt === 0) {
+      return error(res, '不能删除最后一个超级管理员', 400);
+    }
+  }
+
+  db.prepare(`DELETE FROM admin_user WHERE id = ?`).run(id);
+  return success(res, { id: parseInt(id) }, '管理员账号已删除');
 });
 
 /* ==========================================================================
@@ -1204,18 +1708,29 @@ router.put('/admin-users/:id/status', (req, res) => {
  * 库存预警列表 (available_stock <= warning_threshold)
  */
 router.get('/inventory/warnings', (req, res) => {
+  const scope = req.adminScope;
+  let scopeJoin = '';
+  let scopeWhere = '';
+  const scopeParams = [];
+  if (scope && scope.dataScope === 'site') {
+    if (!scope.scopeId) return success(res, { list: [], total: 0 });
+    scopeJoin = ` INNER JOIN warehouse_coverage wc ON wc.warehouse_id = i.warehouse_id`;
+    scopeWhere = ` AND wc.community_id = ?`;
+    scopeParams.push(scope.scopeId);
+  }
   const list = db.prepare(`
-    SELECT i.id, i.available_stock, i.locked_stock, i.warning_threshold, i.updated_at,
+    SELECT DISTINCT i.id, i.available_stock, i.locked_stock, i.warning_threshold, i.updated_at,
            s.id as sku_id, s.name as sku_name, s.main_image, s.unit, s.sale_price, s.status as sku_status,
            w.id as warehouse_id, w.name as warehouse_name,
            c.name as category_name
     FROM inventory i
+    ${scopeJoin}
     INNER JOIN sku s ON s.id = i.sku_id
     INNER JOIN warehouse w ON w.id = i.warehouse_id
     LEFT JOIN category c ON c.id = s.category_id
-    WHERE i.available_stock <= i.warning_threshold
+    WHERE i.available_stock <= i.warning_threshold${scopeWhere}
     ORDER BY i.available_stock ASC, i.updated_at DESC
-  `).all();
+  `).all(...scopeParams);
   const result = list.map(i => ({
     id: i.id,
     skuId: i.sku_id,

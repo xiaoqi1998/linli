@@ -16,7 +16,23 @@ const Admin = (function () {
         console.error('登录失败:', e);
       }
     }
+    // 站点管理员隐藏无权限的菜单 (RBAC/对账等)
+    applyMenuVisibility();
     await go('dashboard');
+  }
+
+  // 根据当前管理员数据范围, 隐藏站点管理员无权访问的菜单项
+  function applyMenuVisibility() {
+    const adminInfo = AdminAPI.getAdminInfo();
+    const isSite = adminInfo && adminInfo.dataScope === 'site';
+    // 站点管理员: 隐藏权限管理菜单 (后端也已拒绝)
+    const hidePages = isSite ? ['rbac'] : [];
+    document.querySelectorAll('.nav-item').forEach(el => {
+      const page = el.dataset.page;
+      if (hidePages.includes(page)) {
+        el.style.display = 'none';
+      }
+    });
   }
 
   async function go(page) {
@@ -50,6 +66,7 @@ const Admin = (function () {
         case 'rider-performance': html = await renderRiderPerformance(); break;
         case 'order-dispatch': html = await renderOrderDispatch(); break;
         case 'rbac': html = await renderRbac(); break;
+        case 'users': html = await renderUsers(); break;
         case 'inventory-warnings': html = await renderInventoryWarnings(); break;
       }
       main.innerHTML = html;
@@ -490,6 +507,7 @@ const Admin = (function () {
             <h3 class="modal-title">添加骑手</h3>
             <div class="form-group"><label class="form-label">姓名 *</label><input class="form-input" id="r-name" placeholder="骑手姓名" /></div>
             <div class="form-group"><label class="form-label">电话</label><input class="form-input" id="r-phone" type="tel" placeholder="手机号" /></div>
+            <div class="form-group"><label class="form-label">登录密码</label><input class="form-input" id="r-password" type="password" placeholder="留空默认为 123456" /></div>
             <div class="form-group"><label class="form-label">所属前置仓 *</label><select class="form-input" id="r-warehouse">${warehouses.map(w => `<option value="${w.id}">${w.name}</option>`).join('')}</select></div>
             <div class="modal-footer">
               <button class="btn btn-outline" onclick="Admin.closeModal()">取消</button>
@@ -504,10 +522,11 @@ const Admin = (function () {
   async function submitRider() {
     const name = document.getElementById('r-name').value.trim();
     const phone = document.getElementById('r-phone').value.trim();
+    const password = document.getElementById('r-password').value.trim();
     const warehouseId = parseInt(document.getElementById('r-warehouse').value);
     if (!name) { toast('请输入姓名'); return; }
     try {
-      await AdminAPI.createRider({ name, phone, warehouseId });
+      await AdminAPI.createRider({ name, phone, warehouseId, password });
       toast('骑手添加成功');
       closeModal();
       go('riders');
@@ -616,6 +635,10 @@ const Admin = (function () {
     const adminInfo = AdminAPI.getAdminInfo();
     if (adminInfo) {
       const perms = adminInfo.permissions || [];
+      const isSite = adminInfo.dataScope === 'site';
+      const scopeBadge = isSite
+        ? `<span class="badge badge-yellow">站点管理员 (社区ID: ${adminInfo.scopeId || '-'})</span>`
+        : `<span class="badge badge-green">超级管理员 (全量数据)</span>`;
       return `
         <div class="page-header"><h1 class="page-title">管理员信息</h1></div>
         <div class="card">
@@ -624,6 +647,7 @@ const Admin = (function () {
             <p style="margin-bottom:10px"><strong>用户名：</strong>${adminInfo.username || '-'}</p>
             <p style="margin-bottom:10px"><strong>姓名：</strong>${adminInfo.realName || '-'}</p>
             <p style="margin-bottom:10px"><strong>角色：</strong><span class="badge badge-green">${adminInfo.roleName || '-'}</span></p>
+            <p style="margin-bottom:10px"><strong>数据范围：</strong>${scopeBadge}</p>
             <p style="margin-bottom:6px"><strong>权限：</strong></p>
             <div>${perms.length ? perms.map(p => `<span class="badge badge-blue" style="margin:2px">${p}</span>`).join('') : '<span class="badge badge-gray">无</span>'}</div>
           </div>
@@ -640,7 +664,7 @@ const Admin = (function () {
         <div class="form-group"><label class="form-label">用户名</label><input class="form-input" id="login-username" placeholder="请输入用户名" /></div>
         <div class="form-group"><label class="form-label">密码</label><input class="form-input" id="login-password" type="password" placeholder="请输入密码" onkeyup="if(event.key==='Enter')Admin.submitAdminLogin()" /></div>
         <div class="modal-footer"><button class="btn btn-primary" onclick="Admin.submitAdminLogin()">登录</button></div>
-        <p style="color:#94a3b8;font-size:12px;margin-top:10px">提示：Demo 模式下无需登录也可使用后台功能。</p>
+        <p style="color:#94a3b8;font-size:12px;margin-top:10px">提示：Demo 模式下无需登录也可使用后台功能。测试账号 admin/admin123 (超管), siteadmin/site123 (站点管理员)。</p>
       </div>
     `;
   }
@@ -659,8 +683,11 @@ const Admin = (function () {
         roleId: res.roleId,
         roleName: res.roleName,
         permissions: res.permissions || [],
+        dataScope: res.dataScope || 'all',
+        scopeId: res.scopeId
       });
       toast('登录成功');
+      applyMenuVisibility();
       go('admin-login');
     } catch (e) { toast('登录失败: ' + e.message); }
   }
@@ -672,6 +699,7 @@ const Admin = (function () {
       AdminAPI.setToken(res.token);
     } catch (e) {}
     toast('已退出管理员登录');
+    applyMenuVisibility();
     go('dashboard');
   }
 
@@ -1563,21 +1591,25 @@ const Admin = (function () {
         </div>
         <div class="table-wrapper">
           <table>
-            <thead><tr><th>ID</th><th>角色名称</th><th>权限</th><th>用户数</th><th>操作</th></tr></thead>
+            <thead><tr><th>ID</th><th>角色名称</th><th>数据范围</th><th>权限</th><th>用户数</th><th>操作</th></tr></thead>
             <tbody>
               ${roleCache.length ? roleCache.map(r => {
                 let perms = [];
                 try { perms = typeof r.permissions === 'string' ? JSON.parse(r.permissions) : (r.permissions || []); } catch (e) {}
+                const scopeBadge = r.data_scope === 'site'
+                  ? '<span class="badge badge-yellow">站点(本社区)</span>'
+                  : '<span class="badge badge-green">全量</span>';
                 return `
                   <tr>
                     <td>${r.id}</td>
                     <td>${r.name}</td>
+                    <td>${scopeBadge}</td>
                     <td>${perms.length ? perms.map(p => `<span class="badge badge-blue" style="margin:1px">${p}</span>`).join('') : '<span class="badge badge-gray">无</span>'}</td>
                     <td>${r.user_count || 0}</td>
                     <td><button class="btn btn-sm btn-outline" onclick="Admin.showRoleModal(${r.id})">编辑</button></td>
                   </tr>
                 `;
-              }).join('') : '<tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:40px">暂无角色</td></tr>'}
+              }).join('') : '<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:40px">暂无角色</td></tr>'}
             </tbody>
           </table>
         </div>
@@ -1608,11 +1640,19 @@ const Admin = (function () {
       { v: 'user:manage', l: '用户管理' },
       { v: 'rbac:manage', l: '权限管理' },
     ];
+    const currentScope = r ? r.data_scope : 'all';
     container.innerHTML = `
       <div class="modal-overlay" onclick="if(event.target===this)Admin.closeModal()">
         <div class="modal">
           <h3 class="modal-title">${r ? '编辑角色' : '新建角色'}</h3>
           <div class="form-group"><label class="form-label">角色名称 *</label><input class="form-input" id="role-name" value="${r ? (r.name || '') : ''}" /></div>
+          <div class="form-group"><label class="form-label">数据范围 *</label>
+            <select class="form-input" id="role-dataScope">
+              <option value="all" ${currentScope === 'all' ? 'selected' : ''}>超级管理员 (全量数据)</option>
+              <option value="site" ${currentScope === 'site' ? 'selected' : ''}>站点管理员 (仅本社区数据)</option>
+            </select>
+            <p style="color:#94a3b8;font-size:12px;margin-top:4px">站点管理员角色需在"管理员账号"里绑定具体社区</p>
+          </div>
           <div class="form-group"><label class="form-label">权限</label>
             <div style="max-height:250px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:6px;padding:10px">
               ${allPermissions.map(p => `<label style="display:block;padding:3px 0"><input type="checkbox" class="role-perm" value="${p.v}" ${perms.includes(p.v) ? 'checked' : ''} /> ${p.l} (${p.v})</label>`).join('')}
@@ -1632,12 +1672,13 @@ const Admin = (function () {
     if (!name) { toast('角色名称不能为空'); return; }
     const checked = document.querySelectorAll('.role-perm:checked');
     const permissions = Array.from(checked).map(c => c.value);
+    const dataScope = document.getElementById('role-dataScope').value;
     try {
       if (id) {
-        await AdminAPI.updateRole(id, { name, permissions });
+        await AdminAPI.updateRole(id, { name, permissions, dataScope });
         toast('角色已更新');
       } else {
-        await AdminAPI.createRole({ name, permissions });
+        await AdminAPI.createRole({ name, permissions, dataScope });
         toast('角色已创建');
       }
       closeModal();
@@ -1668,21 +1709,31 @@ const Admin = (function () {
         </div>
         <div class="table-wrapper">
           <table>
-            <thead><tr><th>ID</th><th>用户名</th><th>姓名</th><th>角色</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+            <thead><tr><th>ID</th><th>用户名</th><th>姓名</th><th>角色</th><th>数据范围</th><th>绑定社区</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
             <tbody>
-              ${list.length ? list.map(a => `
+              ${list.length ? list.map(a => {
+                const scopeBadge = a.data_scope === 'site'
+                  ? '<span class="badge badge-yellow">站点</span>'
+                  : '<span class="badge badge-green">全量</span>';
+                return `
                 <tr>
                   <td>${a.id}</td>
                   <td>${a.username}</td>
                   <td>${a.real_name || '-'}</td>
                   <td>${a.role_name ? `<span class="badge badge-blue">${a.role_name}</span>` : '<span class="badge badge-gray">未分配</span>'}</td>
+                  <td>${scopeBadge}</td>
+                  <td>${a.scope_community_name ? `<span class="badge badge-gray">${a.scope_community_name}</span>` : '<span style="color:#94a3b8">-</span>'}</td>
                   <td>${a.status === 1 ? '<span class="badge badge-green">启用</span>' : '<span class="badge badge-red">禁用</span>'}</td>
                   <td style="font-size:12px;color:#64748b">${a.created_at || ''}</td>
                   <td>
+                    <button class="btn btn-sm btn-outline" onclick="Admin.showEditAdminUserModal(${a.id})">编辑</button>
+                    <button class="btn btn-sm btn-outline" onclick="Admin.showAdminPasswordModal(${a.id})">改密码</button>
                     <button class="btn btn-sm ${a.status === 1 ? 'btn-outline' : 'btn-primary'}" onclick="Admin.toggleAdminUser(${a.id}, ${a.status === 1 ? 0 : 1})">${a.status === 1 ? '禁用' : '启用'}</button>
+                    <button class="btn btn-sm btn-outline" style="color:#ef4444;border-color:#ef4444" onclick="Admin.deleteAdminUser(${a.id})">删除</button>
                   </td>
                 </tr>
-              `).join('') : '<tr><td colspan="7" style="text-align:center;color:#94a3b8;padding:40px">暂无管理员</td></tr>'}
+                `;
+              }).join('') : '<tr><td colspan="9" style="text-align:center;color:#94a3b8;padding:40px">暂无管理员</td></tr>'}
             </tbody>
           </table>
         </div>
@@ -1696,10 +1747,16 @@ const Admin = (function () {
     go('rbac');
   }
 
-  function showAdminUserModal() {
+  async function showAdminUserModal() {
     const container = document.getElementById('modal-container');
     if (!container) return;
     const roles = roleCache || [];
+    // 拉取社区列表用于站点管理员绑定
+    let communities = [];
+    try {
+      const cData = await AdminAPI.getCommunities();
+      communities = cData.list || [];
+    } catch (e) {}
     container.innerHTML = `
       <div class="modal-overlay" onclick="if(event.target===this)Admin.closeModal()">
         <div class="modal">
@@ -1707,7 +1764,8 @@ const Admin = (function () {
           <div class="form-group"><label class="form-label">用户名 *</label><input class="form-input" id="au-username" placeholder="登录用户名" /></div>
           <div class="form-group"><label class="form-label">密码 *</label><input class="form-input" id="au-password" type="password" placeholder="登录密码" /></div>
           <div class="form-group"><label class="form-label">姓名</label><input class="form-input" id="au-realName" placeholder="真实姓名" /></div>
-          <div class="form-group"><label class="form-label">角色</label><select class="form-input" id="au-roleId"><option value="">请选择角色</option>${roles.map(r => `<option value="${r.id}">${r.name}</option>`).join('')}</select></div>
+          <div class="form-group"><label class="form-label">角色 *</label><select class="form-input" id="au-roleId" onchange="Admin.onRoleChange()"><option value="">请选择角色</option>${roles.map(r => `<option value="${r.id}" data-scope="${r.data_scope || 'all'}">${r.name}</option>`).join('')}</select></div>
+          <div class="form-group" id="au-scope-group" style="display:none"><label class="form-label">绑定社区 *</label><select class="form-input" id="au-scopeId"><option value="">请选择社区</option>${communities.map(c => `<option value="${c.id}">${c.name}</option>`).join('')}</select></div>
           <div class="modal-footer">
             <button class="btn btn-outline" onclick="Admin.closeModal()">取消</button>
             <button class="btn btn-primary" onclick="Admin.submitAdminUser()">创建</button>
@@ -1717,12 +1775,21 @@ const Admin = (function () {
     `;
   }
 
+  function onRoleChange() {
+    const sel = document.getElementById('au-roleId');
+    const opt = sel.options[sel.selectedIndex];
+    const scope = opt ? opt.getAttribute('data-scope') : 'all';
+    const group = document.getElementById('au-scope-group');
+    if (group) group.style.display = (scope === 'site') ? '' : 'none';
+  }
+
   async function submitAdminUser() {
     const data = {
       username: document.getElementById('au-username').value.trim(),
       password: document.getElementById('au-password').value,
       realName: document.getElementById('au-realName').value,
       roleId: document.getElementById('au-roleId').value ? parseInt(document.getElementById('au-roleId').value) : null,
+      scopeId: document.getElementById('au-scopeId') ? (document.getElementById('au-scopeId').value ? parseInt(document.getElementById('au-scopeId').value) : null) : null,
     };
     if (!data.username || !data.password) { toast('用户名和密码不能为空'); return; }
     try {
@@ -1738,6 +1805,338 @@ const Admin = (function () {
       await AdminAPI.updateAdminUserStatus(id, status);
       toast('状态已更新');
       go('rbac');
+    } catch (e) { toast('操作失败: ' + e.message); }
+  }
+
+  // 编辑管理员账号 (姓名/角色/绑定社区)
+  async function showEditAdminUserModal(id) {
+    const container = document.getElementById('modal-container');
+    if (!container) return;
+    const [data, rolesData] = await Promise.all([
+      AdminAPI.getAdminUsers(),
+      AdminAPI.getRoles(),
+    ]);
+    const a = (data.list || []).find(x => x.id === id);
+    const roles = rolesData.list || [];
+    roleCache = roles;
+    if (!a) { toast('账号不存在'); return; }
+
+    let communities = [];
+    try { communities = (await AdminAPI.getCommunities()).list || []; } catch (e) {}
+
+    const isSiteRole = (roles.find(r => r.id === a.role_id) || {}).data_scope === 'site';
+    container.innerHTML = `
+      <div class="modal-overlay" onclick="if(event.target===this)Admin.closeModal()">
+        <div class="modal">
+          <h3 class="modal-title">编辑管理员账号</h3>
+          <div class="form-group"><label class="form-label">用户名</label><input class="form-input" value="${a.username}" disabled style="background:#f1f5f9" /></div>
+          <div class="form-group"><label class="form-label">姓名</label><input class="form-input" id="eau-realName" value="${a.real_name || ''}" /></div>
+          <div class="form-group"><label class="form-label">角色 *</label><select class="form-input" id="eau-roleId" onchange="Admin.onEditRoleChange()"><option value="">请选择角色</option>${roles.map(r => `<option value="${r.id}" data-scope="${r.data_scope || 'all'}" ${r.id === a.role_id ? 'selected' : ''}>${r.name}</option>`).join('')}</select></div>
+          <div class="form-group" id="eau-scope-group" style="display:${isSiteRole ? '' : 'none'}"><label class="form-label">绑定社区 *</label><select class="form-input" id="eau-scopeId"><option value="">请选择社区</option>${communities.map(c => `<option value="${c.id}" ${c.id === a.scope_id ? 'selected' : ''}>${c.name}</option>`).join('')}</select></div>
+          <div class="modal-footer">
+            <button class="btn btn-outline" onclick="Admin.closeModal()">取消</button>
+            <button class="btn btn-primary" onclick="Admin.submitEditAdminUser(${id})">保存</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function onEditRoleChange() {
+    const sel = document.getElementById('eau-roleId');
+    const opt = sel.options[sel.selectedIndex];
+    const scope = opt ? opt.getAttribute('data-scope') : 'all';
+    const group = document.getElementById('eau-scope-group');
+    if (group) group.style.display = (scope === 'site') ? '' : 'none';
+  }
+
+  async function submitEditAdminUser(id) {
+    const data = {
+      realName: document.getElementById('eau-realName').value,
+      roleId: document.getElementById('eau-roleId').value ? parseInt(document.getElementById('eau-roleId').value) : null,
+      scopeId: document.getElementById('eau-scopeId') ? (document.getElementById('eau-scopeId').value ? parseInt(document.getElementById('eau-scopeId').value) : null) : null,
+    };
+    try {
+      await AdminAPI.updateAdminUser(id, data);
+      toast('管理员账号已更新');
+      closeModal();
+      go('rbac');
+    } catch (e) { toast('操作失败: ' + e.message); }
+  }
+
+  // 修改管理员密码
+  function showAdminPasswordModal(id) {
+    const container = document.getElementById('modal-container');
+    if (!container) return;
+    container.innerHTML = `
+      <div class="modal-overlay" onclick="if(event.target===this)Admin.closeModal()">
+        <div class="modal">
+          <h3 class="modal-title">重置管理员密码</h3>
+          <div class="form-group"><label class="form-label">新密码 * (至少6位)</label><input class="form-input" id="ap-newPassword" type="password" placeholder="输入新密码" /></div>
+          <div class="modal-footer">
+            <button class="btn btn-outline" onclick="Admin.closeModal()">取消</button>
+            <button class="btn btn-primary" onclick="Admin.submitAdminPassword(${id})">确认重置</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  async function submitAdminPassword(id) {
+    const newPassword = document.getElementById('ap-newPassword').value;
+    if (!newPassword || newPassword.length < 6) { toast('新密码长度不能少于6位'); return; }
+    try {
+      await AdminAPI.updateAdminUserPassword(id, newPassword);
+      toast('密码已重置');
+      closeModal();
+    } catch (e) { toast('操作失败: ' + e.message); }
+  }
+
+  // 删除管理员账号
+  async function deleteAdminUser(id) {
+    if (!confirm('确认删除该管理员账号? 此操作不可撤销.')) return;
+    try {
+      await AdminAPI.deleteAdminUser(id);
+      toast('管理员账号已删除');
+      go('rbac');
+    } catch (e) { toast('删除失败: ' + e.message); }
+  }
+
+  /* ---- 前台用户管理 ---- */
+  let userFilter = { keyword: '', status: '', memberLevel: '', source: '' };
+
+  async function renderUsers() {
+    const params = { page: 1, pageSize: 20, ...userFilter };
+    const data = await AdminAPI.getUsers(params);
+    const list = data.list || [];
+    const total = data.total || 0;
+    const page = data.page || 1;
+    const pageSize = data.pageSize || 20;
+    const totalPages = Math.ceil(total / pageSize) || 1;
+
+    const memberLevelText = { 1: '普通会员', 2: '银卡', 3: '金卡', 4: '钻石' };
+    const sourceText = { search: '搜索', share: '分享', qr: '扫码', invite: '邀请' };
+
+    return `
+      <div class="page-header">
+        <h1 class="page-title">前台用户管理</h1>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">用户列表 (共 ${total} 人)</span>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:15px">
+          <input class="form-input" id="uf-keyword" placeholder="手机号/昵称" value="${userFilter.keyword || ''}" style="max-width:200px" onkeyup="if(event.key==='Enter')Admin.searchUsers()" />
+          <select class="form-input" id="uf-status" style="max-width:140px" onchange="Admin.searchUsers()">
+            <option value="">全部状态</option>
+            <option value="1" ${userFilter.status === '1' ? 'selected' : ''}>启用</option>
+            <option value="0" ${userFilter.status === '0' ? 'selected' : ''}>禁用</option>
+          </select>
+          <select class="form-input" id="uf-memberLevel" style="max-width:140px" onchange="Admin.searchUsers()">
+            <option value="">全部等级</option>
+            <option value="1" ${userFilter.memberLevel === '1' ? 'selected' : ''}>普通会员</option>
+            <option value="2" ${userFilter.memberLevel === '2' ? 'selected' : ''}>银卡</option>
+            <option value="3" ${userFilter.memberLevel === '3' ? 'selected' : ''}>金卡</option>
+            <option value="4" ${userFilter.memberLevel === '4' ? 'selected' : ''}>钻石</option>
+          </select>
+          <select class="form-input" id="uf-source" style="max-width:140px" onchange="Admin.searchUsers()">
+            <option value="">全部来源</option>
+            <option value="search" ${userFilter.source === 'search' ? 'selected' : ''}>搜索</option>
+            <option value="share" ${userFilter.source === 'share' ? 'selected' : ''}>分享</option>
+            <option value="qr" ${userFilter.source === 'qr' ? 'selected' : ''}>扫码</option>
+            <option value="invite" ${userFilter.source === 'invite' ? 'selected' : ''}>邀请</option>
+          </select>
+          <button class="btn btn-primary btn-sm" onclick="Admin.searchUsers()">搜索</button>
+          <button class="btn btn-outline btn-sm" onclick="Admin.resetUserFilter()">重置</button>
+        </div>
+        <div class="table-wrapper">
+          <table>
+            <thead><tr><th>ID</th><th>手机号</th><th>昵称</th><th>会员等级</th><th>累计消费</th><th>订单数</th><th>积分</th><th>来源</th><th>状态</th><th>注册时间</th><th>操作</th></tr></thead>
+            <tbody>
+              ${list.length ? list.map(u => `
+                <tr>
+                  <td>${u.id}</td>
+                  <td>${u.phone}</td>
+                  <td>${u.nick_name || '-'}</td>
+                  <td><span class="badge badge-blue">${memberLevelText[u.member_level] || '普通'}</span></td>
+                  <td>¥${parseFloat(u.total_consume || 0).toFixed(2)}</td>
+                  <td>${u.order_count || 0}</td>
+                  <td>${u.points || 0}</td>
+                  <td>${sourceText[u.source] || u.source || '-'}</td>
+                  <td>${u.status === 1 ? '<span class="badge badge-green">启用</span>' : '<span class="badge badge-red">禁用</span>'}</td>
+                  <td style="font-size:12px;color:#64748b">${(u.created_at || '').substring(0, 16)}</td>
+                  <td>
+                    <button class="btn btn-sm btn-outline" onclick="Admin.showUserDetailModal(${u.id})">详情</button>
+                    <button class="btn btn-sm btn-outline" onclick="Admin.showEditUserModal(${u.id})">编辑</button>
+                    <button class="btn btn-sm ${u.status === 1 ? 'btn-outline' : 'btn-primary'}" onclick="Admin.toggleUser(${u.id}, ${u.status === 1 ? 0 : 1})">${u.status === 1 ? '禁用' : '启用'}</button>
+                    <button class="btn btn-sm btn-outline" onclick="Admin.showUserPasswordModal(${u.id})">重置密码</button>
+                  </td>
+                </tr>
+              `).join('') : '<tr><td colspan="11" style="text-align:center;color:#94a3b8;padding:40px">暂无用户</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+        ${total > pageSize ? `
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:15px">
+            <span style="font-size:13px;color:#64748b">第 ${page} / ${totalPages} 页, 共 ${total} 条</span>
+            <div>
+              <button class="btn btn-sm btn-outline" ${page <= 1 ? 'disabled' : ''} onclick="Admin.changeUserPage(${page - 1})">上一页</button>
+              <button class="btn btn-sm btn-outline" ${page >= totalPages ? 'disabled' : ''} onclick="Admin.changeUserPage(${page + 1})">下一页</button>
+            </div>
+          </div>
+        ` : ''}
+      </div>
+      <div id="modal-container"></div>
+    `;
+  }
+
+  function searchUsers() {
+    userFilter.keyword = document.getElementById('uf-keyword').value.trim();
+    userFilter.status = document.getElementById('uf-status').value;
+    userFilter.memberLevel = document.getElementById('uf-memberLevel').value;
+    userFilter.source = document.getElementById('uf-source').value;
+    userFilter.page = 1;
+    go('users');
+  }
+
+  function resetUserFilter() {
+    userFilter = { keyword: '', status: '', memberLevel: '', source: '', page: 1 };
+    go('users');
+  }
+
+  function changeUserPage(p) {
+    userFilter.page = p;
+    go('users');
+  }
+
+  // 用户详情模态框
+  async function showUserDetailModal(id) {
+    const container = document.getElementById('modal-container');
+    if (!container) return;
+    container.innerHTML = `<div class="modal-overlay"><div class="modal"><h3 class="modal-title">加载中...</h3></div></div>`;
+    try {
+      const data = await AdminAPI.getUserDetail(id);
+      const u = data.user;
+      const orders = data.orders || [];
+      const addresses = data.addresses || [];
+      const memberLevelText = { 1: '普通会员', 2: '银卡', 3: '金卡', 4: '钻石' };
+      const statusText = u.status === 1 ? '<span class="badge badge-green">启用</span>' : '<span class="badge badge-red">禁用</span>';
+
+      container.innerHTML = `
+        <div class="modal-overlay" onclick="if(event.target===this)Admin.closeModal()">
+          <div class="modal" style="max-width:720px">
+            <h3 class="modal-title">用户详情</h3>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 20px;font-size:14px">
+              <div><strong>ID:</strong> ${u.id}</div>
+              <div><strong>手机号:</strong> ${u.phone}</div>
+              <div><strong>昵称:</strong> ${u.nick_name || '-'}</div>
+              <div><strong>邮箱:</strong> ${u.email || '-'}</div>
+              <div><strong>会员等级:</strong> <span class="badge badge-blue">${memberLevelText[u.member_level] || '普通'}</span></div>
+              <div><strong>状态:</strong> ${statusText}</div>
+              <div><strong>累计消费:</strong> ¥${parseFloat(u.total_consume || 0).toFixed(2)}</div>
+              <div><strong>订单数:</strong> ${u.order_count || 0}</div>
+              <div><strong>积分:</strong> ${u.points || 0}</div>
+              <div><strong>来源:</strong> ${u.source || '-'}</div>
+              <div><strong>最后登录:</strong> ${(u.last_login_at || '-').substring(0, 16)}</div>
+              <div><strong>注册时间:</strong> ${(u.created_at || '').substring(0, 16)}</div>
+            </div>
+            <h4 style="margin:20px 0 8px;font-size:14px">最近订单 (${orders.length})</h4>
+            <div style="max-height:200px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:6px">
+              ${orders.length ? `<table style="width:100%;font-size:12px"><thead style="background:#f8fafc"><tr><th style="padding:6px">订单号</th><th style="padding:6px">状态</th><th style="padding:6px">金额</th><th style="padding:6px">时间</th></tr></thead><tbody>
+                ${orders.map(o => `<tr style="border-top:1px solid #e2e8f0"><td style="padding:6px">${o.order_no}</td><td style="padding:6px">${o.pay_status === 1 ? '已支付' : '未支付'}</td><td style="padding:6px">¥${parseFloat(o.pay_amount || 0).toFixed(2)}</td><td style="padding:6px">${(o.created_at || '').substring(0, 16)}</td></tr>`).join('')}
+              </tbody></table>` : '<div style="padding:20px;text-align:center;color:#94a3b8">暂无订单</div>'}
+            </div>
+            <h4 style="margin:20px 0 8px;font-size:14px">收货地址 (${addresses.length})</h4>
+            <div style="max-height:150px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:6px">
+              ${addresses.length ? addresses.map(a => `<div style="padding:8px;border-bottom:1px solid #e2e8f0;font-size:12px"><strong>${a.contact_name}</strong> ${a.contact_phone} ${a.is_default ? '<span class="badge badge-green" style="margin-left:4px">默认</span>' : ''}<br/><span style="color:#64748b">${a.province || ''}${a.city || ''}${a.district || ''}${a.detail || ''}</span></div>`).join('') : '<div style="padding:20px;text-align:center;color:#94a3b8">暂无地址</div>'}
+            </div>
+            <div class="modal-footer">
+              <button class="btn btn-outline" onclick="Admin.closeModal()">关闭</button>
+            </div>
+          </div>
+        </div>
+      `;
+    } catch (e) {
+      container.innerHTML = `<div class="modal-overlay" onclick="if(event.target===this)Admin.closeModal()"><div class="modal"><h3 class="modal-title">加载失败</h3><p>${e.message}</p><div class="modal-footer"><button class="btn btn-outline" onclick="Admin.closeModal()">关闭</button></div></div></div>`;
+    }
+  }
+
+  // 编辑用户模态框
+  async function showEditUserModal(id) {
+    const container = document.getElementById('modal-container');
+    if (!container) return;
+    container.innerHTML = `<div class="modal-overlay"><div class="modal"><h3 class="modal-title">加载中...</h3></div></div>`;
+    try {
+      const data = await AdminAPI.getUserDetail(id);
+      const u = data.user;
+      container.innerHTML = `
+        <div class="modal-overlay" onclick="if(event.target===this)Admin.closeModal()">
+          <div class="modal">
+            <h3 class="modal-title">编辑用户</h3>
+            <div class="form-group"><label class="form-label">手机号</label><input class="form-input" value="${u.phone}" disabled style="background:#f1f5f9" /></div>
+            <div class="form-group"><label class="form-label">昵称</label><input class="form-input" id="eu-nickName" value="${u.nick_name || ''}" /></div>
+            <div class="form-group"><label class="form-label">邮箱</label><input class="form-input" id="eu-email" value="${u.email || ''}" /></div>
+            <div class="form-group"><label class="form-label">会员等级</label><select class="form-input" id="eu-memberLevel"><option value="1" ${u.member_level === 1 ? 'selected' : ''}>普通会员</option><option value="2" ${u.member_level === 2 ? 'selected' : ''}>银卡</option><option value="3" ${u.member_level === 3 ? 'selected' : ''}>金卡</option><option value="4" ${u.member_level === 4 ? 'selected' : ''}>钻石</option></select></div>
+            <div class="form-group"><label class="form-label">积分</label><input class="form-input" id="eu-points" type="number" value="${u.points || 0}" /></div>
+            <div class="modal-footer">
+              <button class="btn btn-outline" onclick="Admin.closeModal()">取消</button>
+              <button class="btn btn-primary" onclick="Admin.submitEditUser(${id})">保存</button>
+            </div>
+          </div>
+        </div>
+      `;
+    } catch (e) {
+      container.innerHTML = `<div class="modal-overlay" onclick="if(event.target===this)Admin.closeModal()"><div class="modal"><h3 class="modal-title">加载失败</h3><p>${e.message}</p><div class="modal-footer"><button class="btn btn-outline" onclick="Admin.closeModal()">关闭</button></div></div></div>`;
+    }
+  }
+
+  async function submitEditUser(id) {
+    const data = {
+      nickName: document.getElementById('eu-nickName').value,
+      email: document.getElementById('eu-email').value,
+      memberLevel: parseInt(document.getElementById('eu-memberLevel').value),
+      points: parseInt(document.getElementById('eu-points').value) || 0,
+    };
+    try {
+      await AdminAPI.updateUser(id, data);
+      toast('用户信息已更新');
+      closeModal();
+      go('users');
+    } catch (e) { toast('操作失败: ' + e.message); }
+  }
+
+  async function toggleUser(id, status) {
+    try {
+      await AdminAPI.updateUserStatus(id, status);
+      toast('状态已更新');
+      go('users');
+    } catch (e) { toast('操作失败: ' + e.message); }
+  }
+
+  function showUserPasswordModal(id) {
+    const container = document.getElementById('modal-container');
+    if (!container) return;
+    container.innerHTML = `
+      <div class="modal-overlay" onclick="if(event.target===this)Admin.closeModal()">
+        <div class="modal">
+          <h3 class="modal-title">重置用户密码</h3>
+          <div class="form-group"><label class="form-label">新密码 * (至少6位)</label><input class="form-input" id="up-newPassword" type="password" placeholder="输入新密码" /></div>
+          <div class="modal-footer">
+            <button class="btn btn-outline" onclick="Admin.closeModal()">取消</button>
+            <button class="btn btn-primary" onclick="Admin.submitUserPassword(${id})">确认重置</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  async function submitUserPassword(id) {
+    const newPassword = document.getElementById('up-newPassword').value;
+    if (!newPassword || newPassword.length < 6) { toast('新密码长度不能少于6位'); return; }
+    try {
+      await AdminAPI.resetUserPassword(id, newPassword);
+      toast('密码已重置');
+      closeModal();
     } catch (e) { toast('操作失败: ' + e.message); }
   }
 
@@ -1801,7 +2200,9 @@ const Admin = (function () {
     goLogsPage,
     exportProductsCsv, importProductsFile,
     assignRiderToOrder, showCancelOrderModal, submitCancelOrder,
-    switchRbacTab, showRoleModal, submitRole, showAdminUserModal, submitAdminUser, toggleAdminUser,
+    switchRbacTab, showRoleModal, submitRole, showAdminUserModal, submitAdminUser, toggleAdminUser, onRoleChange,
+    showEditAdminUserModal, onEditRoleChange, submitEditAdminUser, showAdminPasswordModal, submitAdminPassword, deleteAdminUser,
+    searchUsers, resetUserFilter, changeUserPage, showUserDetailModal, showEditUserModal, submitEditUser, toggleUser, showUserPasswordModal, submitUserPassword,
   };
 })();
 
